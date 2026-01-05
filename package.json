@@ -1,0 +1,26 @@
+{
+    "name": "2ndbrain",
+    "version": "0.1.0",
+    "private": true,
+    "description": "Offline-First AI Second Brain / 离线优先的AI第二大脑",
+    "workspaces": [
+        "apps/*"
+    ],
+    "scripts": {
+        "dev": "npm run dev --workspace=apps/web",
+        "build": "npm run build --workspace=apps/web",
+        "dev:ext": "npm run dev --workspace=apps/extension",
+        "build:ext": "npm run build --workspace=apps/extension",
+        "lint": "npm run lint --workspaces"
+    },
+    "keywords": [
+        "ai",
+        "second-brain",
+        "2ndbrain",
+        "offline",
+        "ollama",
+        "rag"
+    ],
+    "author": "",
+    "license": "MIT"
+}
