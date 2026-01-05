@@ -205,7 +205,28 @@ export async function generateTags(content: string): Promise<string[]> {
         return tags.slice(0, 5); // 最多5个标签
     } catch (error) {
         console.error('生成标签失败:', error);
-        return ['未分类'];
+    }
+}
+
+// 标题生成
+export async function generateTitle(content: string): Promise<string> {
+    try {
+        const messages = [
+            {
+                role: 'system' as const,
+                content: '你是一个专业的编辑。请为以下内容生成一个简短的标题（12个字以内）。只返回标题文本，不要包含任何标点符号或前缀。',
+            },
+            {
+                role: 'user' as const,
+                content: content.substring(0, 2000),
+            },
+        ];
+
+        const response = await chat(messages);
+        return response.replace(/["《》]/g, '').trim().substring(0, 20); // 稍微宽容一点限制，防止截断
+    } catch (error) {
+        console.error('生成标题失败:', error);
+        return '';
     }
 }
 

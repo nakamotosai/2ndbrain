@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createNote, getOrCreateTag, addTagToNote, addSource, updateNote, getNoteById, type Note } from '@/lib/db';
 import { addNoteEmbedding } from '@/lib/vector';
 import { saveMarkdown } from '@/lib/storage';
-import { summarize, generateTags, generateEmbedding, checkOllamaHealth } from '@/lib/ollama';
+import { summarize, generateTags, generateEmbedding, checkOllamaHealth, generateTitle } from '@/lib/ollama';
 
 // CORS 配置 - 允许 Chrome 扩展访问
 const CORS_HEADERS = {
@@ -143,16 +143,12 @@ async function processAI(
             [summary, tags, embedding] = results;
 
             // 根据摘要生成更好的标题
-            let author = '';
-            const authorMatch = originalTitle?.match(/Twitter: (.*?) - /);
-            if (authorMatch) {
-                author = authorMatch[1];
-            }
+            // Note: Parallel execution for speed
+            const [generatedTitle] = await Promise.all([
+                generateTitle(content)
+            ]);
 
-            // Clean summary of any Markdown headings
-            const cleanSummary = summary.replace(/^#+\s*/, '').replace(/\*\*/g, '').substring(0, 50);
-
-            noteTitle = author ? `${author}: ${cleanSummary}` : cleanSummary;
+            noteTitle = generatedTitle || originalTitle;
         } catch (aiError: any) {
             if (aiError.name === 'AbortError') {
                 throw aiError;

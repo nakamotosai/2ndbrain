@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { Sparkles } from 'lucide-react';
+import { Sparkles, Trash2, RefreshCw } from 'lucide-react';
 import { Sidebar } from './components/Sidebar';
 import { NoteList } from './components/NoteList';
 import { NoteReader } from './components/NoteReader';
@@ -21,6 +21,7 @@ interface Note {
   tags: Tag[];
   sort_order?: number;
   is_deleted?: boolean;
+  is_archived?: boolean;
 }
 
 interface Collection {
@@ -30,11 +31,12 @@ interface Collection {
 }
 
 interface FilterState {
-  type: 'all' | 'tag' | 'source' | 'collection';
+  type: 'all' | 'tag' | 'source' | 'collection' | 'archive' | 'trash';
   value?: string | number;
 }
 
 import { SettingsModal } from './components/SettingsModal';
+import { SearchModal } from './components/SearchModal';
 
 export default function Home() {
   const [notes, setNotes] = useState<Note[]>([]);
@@ -44,9 +46,11 @@ export default function Home() {
   const [selectedNoteId, setSelectedNoteId] = useState<number | null>(null);
   const [isAiOnline, setIsAiOnline] = useState(true);
   const [loading, setLoading] = useState(true);
+  const [fontStyle, setFontStyle] = useState<'sans' | 'serif'>('sans');
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<'general' | 'collections' | 'tags' | 'trash'>('trash');
+  const [settingsTab, setSettingsTab] = useState<'general' | 'collections' | 'tags' | 'trash' | 'appearance'>('general');
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
 
   // 用于跟踪已知的最大ID，以便检测新笔记
   const lastKnownMaxIdRef = useRef<number>(0);
@@ -59,6 +63,8 @@ export default function Home() {
       if (filter.type === 'tag') query = `?tag=${filter.value}`;
       else if (filter.type === 'source') query = `?source=${filter.value}`;
       else if (filter.type === 'collection') query = `?collectionId=${filter.value}`;
+      else if (filter.type === 'archive') query = `?archived=true`;
+      else if (filter.type === 'trash') query = `?trash=true`;
 
       const res = await fetch(`/api/notes${query}`);
       const data = await res.json();
@@ -120,7 +126,7 @@ export default function Home() {
   }, [filter, fetchNotes]);
 
   // Handlers
-  const handleFilterSelect = (type: 'all' | 'tag' | 'source' | 'collection', value?: string | number) => {
+  const handleFilterSelect = (type: 'all' | 'tag' | 'source' | 'collection' | 'archive' | 'trash', value?: string | number) => {
     setFilter({ type, value });
     setSelectedNoteId(null);
     // 重置已知ID，避免切换过滤器时误判新笔记
@@ -143,16 +149,40 @@ export default function Home() {
   };
 
   const handleDeleteNote = async (id: number) => {
+    // Determine if we are permanently deleting
+    const isPermanent = filter.type === 'trash';
+
+    if (isPermanent && !confirm('此操作无法撤销，确定永久删除吗？')) return;
+
+    // Optimistic Update
+    setNotes(prev => prev.filter(n => n.id !== id));
+    if (selectedNoteId === id) setSelectedNoteId(null);
+
     try {
-      const res = await fetch(`/api/notes?id=${id}`, { method: 'DELETE' });
-      if (res.ok) {
-        setNotes(prev => prev.filter(n => n.id !== id));
-        if (selectedNoteId === id) setSelectedNoteId(null);
-      }
-    } catch (e) { console.error(e); }
+      const query = isPermanent ? `?id=${id}&permanent=true` : `?id=${id}`;
+      await fetch(`/api/notes${query}`, { method: 'DELETE' });
+    } catch (e) {
+      console.error(e);
+      fetchNotes(true); // Revert/Refresh on error
+    }
+  };
+
+  const handleEmptyTrash = async () => {
+    if (!confirm('确定清空回收站吗？此操作无法撤销。')) return;
+    setLoading(true);
+    try {
+      await fetch('/api/notes?action=emptyTrash', { method: 'DELETE' });
+      await fetchNotes();
+    } catch (e) {
+      console.error(e);
+      alert('清空失败');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleMoveNote = async (id: number, direction: 'up' | 'down') => {
+    // ... (unchanged)
     // Optimistic update
     const index = notes.findIndex(n => n.id === id);
     if (index === -1) return;
@@ -178,6 +208,59 @@ export default function Home() {
     }
   };
 
+  const handleArchiveNote = async (id: number) => {
+    // Optimistic Update
+    setNotes(prev => prev.filter(n => n.id !== id));
+    if (selectedNoteId === id) setSelectedNoteId(null);
+
+    try {
+      await fetch('/api/notes', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, is_archived: true })
+      });
+    } catch (e) {
+      console.error(e);
+      fetchNotes(true);
+    }
+  };
+
+  const handleRestoreNote = async (id: number) => {
+    // Optimistic Update
+    setNotes(prev => prev.filter(n => n.id !== id));
+    if (selectedNoteId === id) setSelectedNoteId(null);
+
+    // If restore from trash, we might need a special patch or just is_deleted=0?
+    // The backend PATCH currently handles 'restore: true' as specific logic for restoration?
+    // Checking route.ts: if (body.restore) restoreNote(id);
+    // restoreNote sets is_deleted=0.
+    // What about archived notes?
+    // handleRestoreNote used to send {is_archived: false}.
+    // If the note is is_deleted, we should send {restore: true}.
+
+    // We need to know if it is deleted or not.
+    // If we are in 'trash' view, it is definitely deleted.
+
+    try {
+      if (filter.type === 'trash') {
+        await fetch('/api/notes', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id, restore: true })
+        });
+      } else {
+        await fetch('/api/notes', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id, is_archived: false })
+        });
+      }
+    } catch (e) {
+      console.error(e);
+      fetchNotes(true);
+    }
+  };
+
   const handleAddToCollection = async (noteId: number, collectionId: number) => {
     try {
       const res = await fetch(`/api/collections/${collectionId}/notes`, {
@@ -191,6 +274,24 @@ export default function Home() {
     } catch (e) { console.error(e); }
   };
 
+  // ...
+
+  // Inside render:
+  // NoteList rendering needs to be passed in full
+  /*
+  <NoteList
+    notes={notes}
+    collections={collections}
+    selectedNoteId={selectedNoteId}
+    onNoteSelect={handleNoteSelect}
+    loading={loading}
+    onDeleteNote={handleDeleteNote}
+    onArchiveNote={handleArchiveNote}
+    onRestoreNote={handleRestoreNote}
+    onAddToCollection={handleAddToCollection}
+  />
+  */
+
   const getHeaderTitle = () => {
     if (filter.type === 'tag') return `#${filter.value}`;
     if (filter.type === 'source') {
@@ -203,10 +304,12 @@ export default function Home() {
       const col = collections.find(c => c.id === filter.value);
       return col ? `📁 ${col.name}` : '收藏集';
     }
+    if (filter.type === 'archive') return '归档箱';
+    if (filter.type === 'trash') return '回收站';
     return '全部笔记';
   };
 
-  const handleOpenSettings = (tab: 'general' | 'collections' | 'tags' | 'trash' = 'general') => {
+  const handleOpenSettings = (tab: 'general' | 'collections' | 'tags' | 'trash' | 'appearance' = 'general') => {
     setSettingsTab(tab);
     setIsSettingsOpen(true);
   };
@@ -238,17 +341,126 @@ export default function Home() {
     }
   };
 
+  const handleReorder = async (newNotes: Note[]) => {
+    // Optimistic update
+    setNotes(newNotes);
+
+    // Calculate new sort orders
+    // The top item should have the highest sort_order.
+    // We can just assign sort_order based on reverse index.
+    // To preserve the spread, we might want to get max sort_order?
+    // Simply: max - index works if we re-normalize.
+
+    // Better strategy for "just works":
+    // Assign sort_order = (TotalCount - index) * 1000 (spacing for future inserts?)
+    // Or just simple decreasing integer.
+    const updates = newNotes.map((note, index) => ({
+      id: note.id,
+      sort_order: (newNotes.length - index) // Top item has highest number
+    }));
+
+    try {
+      await fetch('/api/notes', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates)
+      });
+    } catch (e) {
+      console.error('Failed to reorder:', e);
+      // Revert is hard without keeping 'prev' state or just refetching.
+      fetchNotes(true);
+    }
+  };
+
+  const [isDragging, setIsDragging] = useState(false);
+
+  const handleDragStart = () => setIsDragging(true);
+  const handleDragEnd = () => setIsDragging(false);
+
   // Polling for auto-refresh
   useEffect(() => {
-    const interval = setInterval(() => {
-      fetchNotes(true);
-      fetchCollections();
-    }, 3000);
+    let interval: NodeJS.Timeout;
+    if (!isDragging) {
+      interval = setInterval(() => {
+        fetchNotes(true);
+        fetchCollections();
+      }, 3000);
+    }
     return () => clearInterval(interval);
-  }, [filter, fetchNotes]);
+  }, [filter, fetchNotes, isDragging]);
+
+  // Shortcut for Search
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        setIsSearchOpen(true);
+      }
+      if (e.key === 'Escape' && isSearchOpen) {
+        setIsSearchOpen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isSearchOpen]);
+
+  // Add to Collection from Search
+  const handleBatchAddToCollection = async (noteIds: number[]) => {
+    const collectionName = prompt('添加到哪个收藏集？(输入名称，新建或现有)');
+    if (!collectionName) return;
+
+    // Find or create collection
+    let targetCol = collections.find(c => c.name === collectionName);
+    if (!targetCol) {
+      if (confirm(`收藏集 "${collectionName}" 不存在，要创建吗？`)) {
+        await handleCreateCollection(collectionName);
+        // Refresh collections to get the new ID
+        // Quick fetch to update local state
+        const res = await fetch('/api/collections');
+        const newCols = await res.json();
+        setCollections(newCols); // Update state directly
+        targetCol = newCols.find((c: any) => c.name === collectionName);
+      } else {
+        return;
+      }
+    }
+
+    if (targetCol) {
+      for (const id of noteIds) {
+        await handleAddToCollection(id, targetCol.id);
+      }
+      alert('已添加');
+      setIsSearchOpen(false);
+    }
+  };
+
+  // Remove Note from Collection
+  const handleRemoveFromCollection = async (noteId: number) => {
+    if (filter.type !== 'collection' || !filter.value) return;
+    const collectionId = Number(filter.value);
+
+    // Optimistic Update
+    setNotes(prev => prev.filter(n => n.id !== noteId));
+    if (selectedNoteId === noteId) setSelectedNoteId(null);
+
+    try {
+      await fetch(`/api/collections/${collectionId}/notes?noteId=${noteId}`, {
+        method: 'DELETE'
+      });
+      fetchCollections(); // Update counts
+    } catch (e) {
+      console.error(e);
+      fetchNotes(true);
+    }
+  };
+
+  // Sync Font Style with Body
+  useEffect(() => {
+    document.body.setAttribute('data-font', fontStyle);
+  }, [fontStyle]);
 
   return (
-    <main className="h-screen flex bg-gray-950 text-gray-100 overflow-hidden">
+    <main className="h-screen flex bg-theme-primary text-theme-primary overflow-hidden transition-colors duration-300">
       {/* Sidebar - 左侧导航 */}
       <Sidebar
         tags={tags}
@@ -258,40 +470,67 @@ export default function Home() {
         onCreateCollection={handleCreateCollection}
         isAiOnline={isAiOnline}
         onOpenSettings={handleOpenSettings}
+        onSearch={() => setIsSearchOpen(true)}
       />
 
       {/* Note List - 中间列表 */}
-      <div className="w-80 h-full border-r border-gray-800 flex flex-col bg-gray-900/30">
-        <header className="p-4 border-b border-gray-800 flex justify-between items-center">
+      <div className="w-80 h-full border-r border-theme flex flex-col bg-theme-secondary/30">
+        <header className="p-4 border-b border-theme flex justify-between items-center shrink-0">
           <div>
-            <h2 className="font-semibold text-gray-200">
+            <h2 className="font-semibold text-theme-primary">
               {getHeaderTitle()}
             </h2>
-            <p className="text-xs text-gray-500 mt-1">
+            <p className="text-xs text-theme-secondary mt-1">
               {notes.length} 条笔记
             </p>
           </div>
-          {filter.type === 'source' && isAiOnline && (
+          <div className="flex items-center gap-2">
+            {filter.type === 'trash' && (
+              <button
+                onClick={handleEmptyTrash}
+                disabled={notes.length === 0}
+                className="flex items-center gap-1 text-xs bg-red-500/10 text-red-500 px-2 py-1.5 rounded hover:bg-red-500/20 transition-colors disabled:opacity-50"
+                title="清空回收站"
+              >
+                <Trash2 size={14} />
+                <span>清空</span>
+              </button>
+            )}
+
             <button
-              onClick={handleAutoOrganize}
-              className="flex items-center gap-1 text-xs bg-indigo-500/10 text-indigo-400 px-2 py-1.5 rounded hover:bg-indigo-500/20 transition-colors"
-              title="使用 AI 自动分类整理"
+              onClick={() => fetchNotes(false)}
+              className="p-1 text-theme-secondary hover:text-theme-primary transition-colors"
+              title="刷新"
             >
-              <Sparkles size={14} />
-              <span>自动整理</span>
+              <RefreshCw size={14} />
             </button>
-          )}
+
+            {filter.type === 'source' && isAiOnline && (
+              <button
+                onClick={handleAutoOrganize}
+                className="flex items-center gap-1 text-xs bg-accent/10 text-accent px-2 py-1.5 rounded hover:bg-accent/20 transition-colors"
+                title="使用 AI 自动分类整理"
+              >
+                <Sparkles size={14} />
+                <span>自动整理</span>
+              </button>
+            )}
+          </div>
         </header>
         <NoteList
           notes={notes}
+          collections={collections}
           selectedNoteId={selectedNoteId}
           onNoteSelect={handleNoteSelect}
           loading={loading}
-          onDeleteNote={handleDeleteNote}
-          onMoveNote={handleMoveNote}
-          onAddToCollection={(id) => {
-            handleNoteSelect(notes.find(n => n.id === id)!);
-          }}
+          isCollectionMode={filter.type === 'collection'}
+          onDeleteNote={filter.type === 'collection' ? handleRemoveFromCollection : handleDeleteNote}
+          onArchiveNote={filter.type === 'trash' ? undefined : handleArchiveNote}
+          onRestoreNote={handleRestoreNote}
+          onAddToCollection={handleAddToCollection}
+          onReorder={handleReorder}
+          onDragStart={handleDragStart}
+          onDragEnd={handleDragEnd}
         />
       </div>
 
@@ -300,6 +539,8 @@ export default function Home() {
         noteId={selectedNoteId}
         collections={collections}
         onAddToCollection={handleAddToCollection}
+        fontStyle={fontStyle}
+        onToggleFont={setFontStyle}
       />
 
       {/* Modals */}
@@ -307,6 +548,12 @@ export default function Home() {
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
         activeTab={settingsTab}
+      />
+
+      <SearchModal
+        isOpen={isSearchOpen}
+        onClose={() => setIsSearchOpen(false)}
+        onAddToCollection={handleBatchAddToCollection}
       />
     </main>
   );

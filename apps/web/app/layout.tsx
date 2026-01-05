@@ -1,10 +1,22 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
+import { Inter, Noto_Sans_SC, Noto_Serif_SC } from "next/font/google";
 import "./globals.css";
 
 const inter = Inter({
   subsets: ["latin"],
   variable: "--font-inter",
+});
+
+const notoSans = Noto_Sans_SC({
+  subsets: ["latin"],
+  weight: ["400", "500", "700"],
+  variable: "--font-noto-sans",
+});
+
+const notoSerif = Noto_Serif_SC({
+  subsets: ["latin"],
+  weight: ["400", "500", "700"],
+  variable: "--font-noto-serif",
 });
 
 export const metadata: Metadata = {
@@ -18,10 +30,14 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="zh-CN" className="dark">
-      <body className={`${inter.variable} font-sans antialiased`}>
-        {children}
+    <html lang="zh-CN">
+      <body className={`${inter.variable} ${notoSans.variable} ${notoSerif.variable} antialiased`}>
+        <ThemeProvider>
+          {children}
+        </ThemeProvider>
       </body>
     </html>
   );
 }
+
+import { ThemeProvider } from "./components/ThemeContext";

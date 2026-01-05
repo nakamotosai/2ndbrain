@@ -44,10 +44,12 @@ export async function GET(request: NextRequest) {
             }
 
             // 获取标签
+            const { getNoteCollections } = await import('@/lib/db');
             const tags = getNoteTags(parseInt(noteId));
+            const collections = getNoteCollections(parseInt(noteId));
 
             return NextResponse.json(
-                { ...note, content, tags },
+                { ...note, content, tags, collections },
                 { headers: CORS_HEADERS }
             );
         }
@@ -63,12 +65,16 @@ export async function GET(request: NextRequest) {
         let notes: any[] = [];
 
         const trash = searchParams.get('trash');
+        const archived = searchParams.get('archived');
         const collectionId = searchParams.get('collectionId');
         const source = searchParams.get('source'); // 'twitter', 'youtube', 'web'
         const tagFilter = searchParams.get('tag');
 
         if (trash === 'true') {
             notes = getDeletedNotes();
+        } else if (archived === 'true') {
+            const { getArchivedNotes } = await import('@/lib/db');
+            notes = getArchivedNotes();
         } else if (collectionId) {
             notes = getNotesByCollection(parseInt(collectionId));
         } else if (source) {
@@ -111,14 +117,21 @@ export async function GET(request: NextRequest) {
 export async function DELETE(request: NextRequest) {
     try {
         const { searchParams } = new URL(request.url);
-        const id = searchParams.get('id');
+        const idStr = searchParams.get('id');
+        const action = searchParams.get('action');
         const permanent = searchParams.get('permanent') === 'true';
 
-        if (!id) {
-            return NextResponse.json({ error: 'ID required' }, { status: 400, headers: CORS_HEADERS });
+        // Empty Trash Logic
+        if (action === 'emptyTrash') {
+            const { emptyTrash } = await import('@/lib/db');
+            emptyTrash();
+            return NextResponse.json({ success: true }, { headers: CORS_HEADERS });
         }
 
-        const noteId = parseInt(id);
+        if (!idStr) {
+            return NextResponse.json({ error: 'ID is required' }, { status: 400, headers: CORS_HEADERS });
+        }
+        const noteId = parseInt(idStr);
 
         // 尝试取消正在进行的AI处理
         try {
@@ -147,6 +160,14 @@ export async function DELETE(request: NextRequest) {
 export async function PATCH(request: NextRequest) {
     try {
         const body = await request.json();
+
+        // Batch update sort order
+        if (Array.isArray(body)) {
+            const { updateNoteSortOrder } = await import('@/lib/db');
+            updateNoteSortOrder(body);
+            return NextResponse.json({ success: true }, { headers: CORS_HEADERS });
+        }
+
         const { id, sort_order, restore } = body;
 
         // Restore logic
@@ -159,6 +180,13 @@ export async function PATCH(request: NextRequest) {
         if (id && sort_order !== undefined) {
             const { updateNote } = await import('@/lib/db');
             updateNote(id, { sort_order });
+            return NextResponse.json({ success: true }, { headers: CORS_HEADERS });
+        }
+
+        if (id && body.is_archived !== undefined) {
+            console.log('[API] PATCH archiving note:', id, body.is_archived);
+            const { updateNote } = await import('@/lib/db');
+            updateNote(id, { is_archived: !!body.is_archived });
             return NextResponse.json({ success: true }, { headers: CORS_HEADERS });
         }
 

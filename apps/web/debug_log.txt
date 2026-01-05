@@ -1,0 +1,62 @@
+Starting title regeneration...
+DB connected
+Fatal Error: SqliteError: no such column: content
+Starting title regeneration...
+DB connected
+Found 28 notes
+Processing[3]
+Updated[3]-> 交易机器人月赚5万 
+Processing[4]
+Updated[4]-> Polymarket机器人暴利 
+Processing[7]
+Updated[7]-> 机器人套利数学漏洞 
+Processing[8]
+Updated[8]-> 内幕交易真相：散户难赢 
+Processing[9]
+Updated[9]-> 自动化高收益交易 
+Processing[10]
+Updated[10]-> DeFi自动化交易崛起 
+Processing[12]
+Updated[12]-> 周赚千美元零风险 
+Processing[13]
+Updated[13]-> 零风险周赚1000 
+Processing[16]
+Updated[16]-> 推特冷启动布局2026 
+Processing[20]
+Updated[20]-> Antigravity多模型使用 
+Processing[21]
+Updated[21]-> Polymarket交易盈亏分析 
+Processing[22]
+Updated[22]-> Polymarket交易盈亏分析 
+Processing[23]
+Updated[23]-> Polymarket交易亏损分析 
+Processing[27]
+Updated[27]-> QQ音乐AI创作赚收益 
+Processing[29]
+Updated[29]-> AI音乐创作QQ赚 
+Processing[32]
+Updated[32]-> 低风险跨平台套利 
+Processing[33]
+Updated[33]-> 无损跨平台套利 
+Processing[34]
+Updated[34]-> 狙击Elon Musk推文的套利者 
+Processing[35]
+Updated[35]-> 雪糕战神赛道推荐 
+Processing[36]
+Updated[36]-> 普通人赚钱土方法 
+Processing[37]
+Updated[37]-> 魏神BTC交易复盘 
+Processing[38]
+Updated[38]-> 跳出框，人生无限可能 
+Processing[39]
+Updated[39]-> 钱生钱的资产之道 
+Processing[40]
+Updated[40]-> Cloudflare为何称赛博菩萨 
+Processing[41]
+Updated[41]-> AI策略试错 保留M3 
+Processing[42]
+Updated[42]-> 语料库搬运电商爆单 
+Processing[43]
+Updated[43]-> AI重塑Web2.0 
+Processing[45]
+Updated[45]-> Polymarket Bot 30k%  

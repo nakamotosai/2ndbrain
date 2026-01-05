@@ -40,6 +40,7 @@ function initTables() {
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       ai_status TEXT DEFAULT 'pending',
       sort_order INTEGER DEFAULT 0,
+      is_archived BOOLEAN DEFAULT 0,
       is_deleted BOOLEAN DEFAULT 0
     )
   `);
@@ -60,6 +61,10 @@ function initTables() {
     const hasIsDeleted = tableInfo.some(col => col.name === 'is_deleted');
     if (!hasIsDeleted) {
       database.exec("ALTER TABLE notes ADD COLUMN is_deleted BOOLEAN DEFAULT 0");
+    }
+    const hasIsArchived = tableInfo.some(col => col.name === 'is_archived');
+    if (!hasIsArchived) {
+      database.exec("ALTER TABLE notes ADD COLUMN is_archived BOOLEAN DEFAULT 0");
     }
   } catch (error) {
     console.error('Migration error:', error);
@@ -133,6 +138,7 @@ export interface Note {
   updated_at?: string;
   ai_status?: 'pending' | 'completed' | 'failed';
   sort_order?: number;
+  is_archived?: boolean;
   is_deleted?: boolean;
 }
 
@@ -167,39 +173,93 @@ export function deleteNote(id: number, permanent = false): void {
   if (permanent) {
     db.prepare('DELETE FROM notes WHERE id = ?').run(id);
   } else {
-    db.prepare('UPDATE notes SET is_deleted = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(id);
+    // Soft delete: Mark as deleted AND un-archive it to ensure it 'moves' to Trash strictly
+    // Or we keep is_archived? Logic says Trash is a separate bucket. 
+    // If we assume mutually exclusive views, setting is_deleted=1 is enough IF queries are correct.
+    // But to be cleaner, let's reset is_archived = 0 so when restored it goes to 'Active' by default, 
+    // unless we strictly want 'Restore to previous state'? 
+    // User requested "Complete redo". Safer to treat Trash as a sink.
+    db.prepare('UPDATE notes SET is_deleted = 1, is_archived = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(id);
   }
 }
 
 export function restoreNote(id: number): void {
   const db = getDb();
-  db.prepare('UPDATE notes SET is_deleted = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(id);
+  // Restore: Un-delete AND Un-archive (move to Active list)
+  // This ensures it reappears in the main list.
+  db.prepare('UPDATE notes SET is_deleted = 0, is_archived = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(id);
 }
 
 export function updateNote(id: number, updates: Partial<Note>): void {
   const db = getDb();
+
+  const safeUpdates: Record<string, any> = { ...updates, id };
   const keys = Object.keys(updates).filter(k => k !== 'id' && k !== 'created_at');
+
   if (keys.length === 0) return;
+
+  // Manual boolean conversion for SQLite
+  for (const key of keys) {
+    const val = (updates as any)[key];
+    if (typeof val === 'boolean') {
+      safeUpdates[key] = val ? 1 : 0;
+    }
+  }
+
+  console.log('[DB] Updating note:', id, safeUpdates);
 
   const setClause = keys.map(k => `${k} = @${k}`).join(', ');
   const stmt = db.prepare(`UPDATE notes SET ${setClause}, updated_at = CURRENT_TIMESTAMP WHERE id = @id`);
-  stmt.run({ ...updates, id });
+  const info = stmt.run(safeUpdates);
+  console.log('[DB] Update result:', info);
+}
+
+export function updateNoteSortOrder(updates: { id: number; sort_order: number }[]): void {
+  const db = getDb();
+  const updateStmt = db.prepare('UPDATE notes SET sort_order = @sort_order WHERE id = @id');
+
+  const transaction = db.transaction((items) => {
+    for (const item of items) {
+      updateStmt.run(item);
+    }
+  });
+
+  transaction(updates);
 }
 
 // 获取所有笔记 - Modified to sort by custom order (DESC) then created_at
 export function getNotes(limit = 50, offset = 0): Note[] {
   const db = getDb();
+  // Active notes: NOT deleted AND NOT archived
   const stmt = db.prepare(`
     SELECT * FROM notes 
-    WHERE is_deleted = 0
+    WHERE is_deleted = 0 AND is_archived = 0
     ORDER BY sort_order DESC, created_at DESC 
     LIMIT ? OFFSET ?
   `);
   return stmt.all(limit, offset) as Note[];
 }
 
+export function getArchivedNotes(): Note[] {
+  const db = getDb();
+  // Archived notes: NOT deleted AND IS archived
+  const stmt = db.prepare(`
+        SELECT * FROM notes 
+        WHERE is_archived = 1 AND is_deleted = 0
+        ORDER BY updated_at DESC
+      `);
+  return stmt.all() as Note[];
+}
+
+// 清空回收站
+export function emptyTrash(): void {
+  const db = getDb();
+  db.prepare('DELETE FROM notes WHERE is_deleted = 1').run();
+}
+
 export function getDeletedNotes(): Note[] {
   const db = getDb();
+  // Deleted notes: IS deleted (archive status ignored, but usually we don't care)
   const stmt = db.prepare(`
       SELECT * FROM notes 
       WHERE is_deleted = 1
@@ -260,7 +320,7 @@ export function getNotesByTag(tagName: string): Note[] {
     SELECT n.* FROM notes n
     JOIN note_tags nt ON n.id = nt.note_id
     JOIN tags t ON nt.tag_id = t.id
-    WHERE t.name = ? AND n.is_deleted = 0
+    WHERE t.name = ? AND n.is_deleted = 0 AND n.is_archived = 0
     ORDER BY n.sort_order DESC, n.created_at DESC
   `);
   return stmt.all(tagName) as Note[];
@@ -322,10 +382,20 @@ export function getNotesByCollection(collectionId: number): Note[] {
   const stmt = db.prepare(`
     SELECT n.* FROM notes n
     JOIN note_collections nc ON n.id = nc.note_id
-    WHERE nc.collection_id = ? AND n.is_deleted = 0
+    WHERE nc.collection_id = ? AND n.is_deleted = 0 AND n.is_archived = 0
     ORDER BY n.sort_order DESC, n.created_at DESC
   `);
   return stmt.all(collectionId) as Note[];
+}
+
+export function getNoteCollections(noteId: number): Collection[] {
+  const db = getDb();
+  const stmt = db.prepare(`
+    SELECT c.* FROM collections c
+    JOIN note_collections nc ON c.id = nc.collection_id
+    WHERE nc.note_id = ?
+  `);
+  return stmt.all(noteId) as Collection[];
 }
 
 export function getNotesBySource(sourceType: string): Note[] {
@@ -335,8 +405,19 @@ export function getNotesBySource(sourceType: string): Note[] {
   // Let's normalize.
   const stmt = db.prepare(`
       SELECT * FROM notes 
-      WHERE source_type LIKE ? AND is_deleted = 0
+      WHERE source_type LIKE ? AND is_deleted = 0 AND is_archived = 0
       ORDER BY sort_order DESC, created_at DESC
     `);
   return stmt.all(`%${sourceType}%`) as Note[];
+}
+
+export function searchNotes(query: string): Note[] {
+  const db = getDb();
+  const stmt = db.prepare(`
+    SELECT * FROM notes 
+    WHERE (title LIKE ? OR summary LIKE ?) AND is_deleted = 0
+    ORDER BY created_at DESC
+  `);
+  const pattern = `%${query}%`;
+  return stmt.all(pattern, pattern) as Note[];
 }
