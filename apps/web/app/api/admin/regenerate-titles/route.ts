@@ -1,67 +1,60 @@
 import { NextResponse } from 'next/server';
-import { getDb, updateNote } from '@/lib/db';
+import { updateNote } from '@/lib/db';
 import { generateTitle } from '@/lib/ollama';
-import { readMarkdown, parseMarkdown } from '@/lib/storage';
-import fs from 'fs';
-import path from 'path';
 
-export const dynamic = 'force-dynamic';
+export const runtime = 'edge';
+
+// Helper to get DB from env
+const getDB = () => {
+    // @ts-ignore
+    const db = process.env.DB as unknown as D1Database;
+    if (!db) {
+        throw new Error('Database binding (DB) not found.');
+    }
+    return db;
+}
 
 export async function POST() {
-    const logPath = path.join(process.cwd(), 'debug_log.txt');
-    const log = (msg: string) => fs.appendFileSync(logPath, msg + '\n');
-
-    log('Starting title regeneration...');
+    console.log('Starting title regeneration...');
     try {
-        const db = getDb();
-        log('DB connected');
+        const db = getDB();
 
-        // Get all notes
-        const notes = db.prepare('SELECT id, title, content_path, summary FROM notes WHERE is_deleted = 0').all() as any[];
-        log(`Found ${notes.length} notes`);
+        // Get all active notes
+        // Note: D1 .all() syntax
+        const { results } = await db.prepare('SELECT id, title, content, summary FROM notes WHERE is_deleted = 0').all<any>();
+
+        console.log(`Found ${results.length} notes`);
 
         let updatedCount = 0;
 
-        for (const note of notes) {
+        for (const note of results) {
+            // Check conditions
             if (note.title.length > 15 || note.title.includes('一句话核心') || note.title.includes('Twitter')) {
-                log(`Processing[${note.id}]`);
+                console.log(`Processing[${note.id}]`);
 
-                let content = '';
-                // Try reading file content
-                if (note.content_path) {
-                    try {
-                        const raw = readMarkdown(note.content_path);
-                        if (raw) {
-                            const parsed = parseMarkdown(raw);
-                            content = parsed.body;
-                        }
-                    } catch (e) {
-                        log(`Failed to read file for [${note.id}]: ${e} `);
-                    }
-                }
-
-                // Fallback to summary
+                // Content is now in DB
+                const content = note.content || '';
                 const textToProcess = content || note.summary || '';
 
                 if (textToProcess) {
                     try {
                         const newTitle = await generateTitle(textToProcess);
                         if (newTitle) {
-                            updateNote(note.id, { title: newTitle });
-                            log(`Updated[${note.id}]-> ${newTitle} `);
+                            await updateNote(db, note.id, { title: newTitle });
+                            console.log(`Updated[${note.id}]-> ${newTitle} `);
                             updatedCount++;
                         }
                     } catch (err) {
-                        log(`Error generating for [${note.id}]: ${err} `);
+                        console.error(`Error generating for [${note.id}]: ${err} `);
                     }
                 } else {
-                    log(`No content found for [${note.id}]`);
+                    console.log(`No content found for [${note.id}]`);
                 }
             }
         }
         return NextResponse.json({ success: true, updated: updatedCount });
     } catch (e) {
-        log(`Fatal Error: ${e} `);
+        console.error(`Fatal Error: ${e} `);
         return NextResponse.json({ error: String(e) }, { status: 500 });
     }
 }

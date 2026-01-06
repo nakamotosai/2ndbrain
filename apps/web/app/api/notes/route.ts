@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getNotes, getNoteById, getNoteTags, getNotesByTag, getAllTags } from '@/lib/db';
-import { readMarkdown, parseMarkdown } from '@/lib/storage';
+import { getNotes, getNoteById, getNoteTags, getNotesByTag, getAllTags, getDeletedNotes, getArchivedNotes, getNotesByCollection, getNotesBySource, getNoteCollections, deleteNote, restoreNote, updateNote, updateNoteSortOrder, emptyTrash } from '@/lib/db';
+import type { CloudflareEnv } from '@/env';
+
+export const runtime = 'edge';
 
 // CORS 配置
 const CORS_HEADERS = {
@@ -9,6 +11,16 @@ const CORS_HEADERS = {
     'Access-Control-Allow-Headers': 'Content-Type',
 };
 
+// Helper to get DB from env
+const getDB = () => {
+    // @ts-ignore - Cloudflare bindings are available in process.env in some setups or global env
+    const db = process.env.DB as unknown as D1Database;
+    if (!db) {
+        throw new Error('Database binding (DB) not found. Ensure you are running in a Cloudflare environment or Wrangler.');
+    }
+    return db;
+}
+
 export async function OPTIONS() {
     return new NextResponse(null, { status: 200, headers: CORS_HEADERS });
 }
@@ -16,16 +28,13 @@ export async function OPTIONS() {
 // 获取笔记列表或单个笔记详情
 export async function GET(request: NextRequest) {
     try {
+        const db = getDB();
         const { searchParams } = new URL(request.url);
-
-        // Dynamic imports to ensure we get latest DB functions
-        const { getNoteById, getNotes, getDeletedNotes, getNotesByTag, getNotesByCollection, getNotesBySource, getNoteTags, getAllTags } = await import('@/lib/db');
-        const { readMarkdown, parseMarkdown } = await import('@/lib/storage');
 
         // 获取单个笔记详情
         const noteId = searchParams.get('id');
         if (noteId) {
-            const note = getNoteById(parseInt(noteId));
+            const note = await getNoteById(db, parseInt(noteId));
             if (!note) {
                 return NextResponse.json(
                     { error: '笔记不存在' },
@@ -33,23 +42,13 @@ export async function GET(request: NextRequest) {
                 );
             }
 
-            // 获取完整内容
-            let content = '';
-            if (note.content_path) {
-                const markdown = readMarkdown(note.content_path);
-                if (markdown) {
-                    const { body } = parseMarkdown(markdown);
-                    content = body;
-                }
-            }
-
             // 获取标签
-            const { getNoteCollections } = await import('@/lib/db');
-            const tags = getNoteTags(parseInt(noteId));
-            const collections = getNoteCollections(parseInt(noteId));
+            const tags = await getNoteTags(db, parseInt(noteId));
+            const collections = await getNoteCollections(db, parseInt(noteId));
 
+            // Content is now directly in the note object
             return NextResponse.json(
-                { ...note, content, tags, collections },
+                { ...note, tags, collections },
                 { headers: CORS_HEADERS }
             );
         }
@@ -57,7 +56,7 @@ export async function GET(request: NextRequest) {
         // 获取标签统计
         const tagsOnly = searchParams.get('tags');
         if (tagsOnly === 'true') {
-            const tags = getAllTags();
+            const tags = await getAllTags(db);
             return NextResponse.json({ tags }, { headers: CORS_HEADERS });
         }
 
@@ -71,29 +70,28 @@ export async function GET(request: NextRequest) {
         const tagFilter = searchParams.get('tag');
 
         if (trash === 'true') {
-            notes = getDeletedNotes();
+            notes = await getDeletedNotes(db);
         } else if (archived === 'true') {
-            const { getArchivedNotes } = await import('@/lib/db');
-            notes = getArchivedNotes();
+            notes = await getArchivedNotes(db);
         } else if (collectionId) {
-            notes = getNotesByCollection(parseInt(collectionId));
+            notes = await getNotesByCollection(db, parseInt(collectionId));
         } else if (source) {
-            notes = getNotesBySource(source);
+            notes = await getNotesBySource(db, source);
         } else if (tagFilter) {
-            notes = getNotesByTag(tagFilter);
+            notes = await getNotesByTag(db, tagFilter);
         } else {
             // 默认分页获取列表
             const page = parseInt(searchParams.get('page') || '1');
             const limit = parseInt(searchParams.get('limit') || '50');
             const offset = (page - 1) * limit;
-            notes = getNotes(limit, offset);
+            notes = await getNotes(db, limit, offset);
         }
 
         // 统一附加标签信息
-        const notesWithTags = notes.map(note => ({
+        const notesWithTags = await Promise.all(notes.map(async note => ({
             ...note,
-            tags: getNoteTags(Number(note.id)),
-        }));
+            tags: await getNoteTags(db, Number(note.id)),
+        })));
 
         return NextResponse.json(
             {
@@ -113,9 +111,10 @@ export async function GET(request: NextRequest) {
     }
 }
 
-// 删除笔记 (Soft Delete) - 同时取消AI处理
+// 删除笔记 (Soft Delete)
 export async function DELETE(request: NextRequest) {
     try {
+        const db = getDB();
         const { searchParams } = new URL(request.url);
         const idStr = searchParams.get('id');
         const action = searchParams.get('action');
@@ -123,8 +122,7 @@ export async function DELETE(request: NextRequest) {
 
         // Empty Trash Logic
         if (action === 'emptyTrash') {
-            const { emptyTrash } = await import('@/lib/db');
-            emptyTrash();
+            await emptyTrash(db);
             return NextResponse.json({ success: true }, { headers: CORS_HEADERS });
         }
 
@@ -133,22 +131,7 @@ export async function DELETE(request: NextRequest) {
         }
         const noteId = parseInt(idStr);
 
-        // 尝试取消正在进行的AI处理
-        try {
-            const { activeProcessing } = await import('@/app/api/ingest/route');
-            const controller = activeProcessing.get(noteId);
-            if (controller) {
-                controller.abort();
-                activeProcessing.delete(noteId);
-                console.log(`删除笔记时取消AI处理 [Note ${noteId}]`);
-            }
-        } catch (e) {
-            // 忽略错误，继续删除
-            console.log('取消AI处理时出错（可忽略）:', e);
-        }
-
-        const { deleteNote } = await import('@/lib/db');
-        deleteNote(noteId, permanent);
+        await deleteNote(db, noteId, permanent);
 
         return NextResponse.json({ success: true }, { headers: CORS_HEADERS });
     } catch (error) {
@@ -159,12 +142,12 @@ export async function DELETE(request: NextRequest) {
 // RESTORE or Reorder
 export async function PATCH(request: NextRequest) {
     try {
-        const body = await request.json();
+        const db = getDB();
+        const body = await request.json() as any;
 
         // Batch update sort order
         if (Array.isArray(body)) {
-            const { updateNoteSortOrder } = await import('@/lib/db');
-            updateNoteSortOrder(body);
+            await updateNoteSortOrder(db, body);
             return NextResponse.json({ success: true }, { headers: CORS_HEADERS });
         }
 
@@ -172,21 +155,17 @@ export async function PATCH(request: NextRequest) {
 
         // Restore logic
         if (id && restore) {
-            const { restoreNote } = await import('@/lib/db');
-            restoreNote(id);
+            await restoreNote(db, id);
             return NextResponse.json({ success: true }, { headers: CORS_HEADERS });
         }
 
         if (id && sort_order !== undefined) {
-            const { updateNote } = await import('@/lib/db');
-            updateNote(id, { sort_order });
+            await updateNote(db, id, { sort_order });
             return NextResponse.json({ success: true }, { headers: CORS_HEADERS });
         }
 
         if (id && body.is_archived !== undefined) {
-            console.log('[API] PATCH archiving note:', id, body.is_archived);
-            const { updateNote } = await import('@/lib/db');
-            updateNote(id, { is_archived: !!body.is_archived });
+            await updateNote(db, id, { is_archived: !!body.is_archived });
             return NextResponse.json({ success: true }, { headers: CORS_HEADERS });
         }
 

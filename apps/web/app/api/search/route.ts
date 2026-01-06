@@ -1,32 +1,58 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { searchNotes, getNoteTags } from '@/lib/db';
+import { searchNotes } from '@/lib/db';
+import { searchSimilarNotes } from '@/lib/vector';
+import { generateEmbedding } from '@/lib/ollama';
+
+export const runtime = 'edge';
+
+const CORS_HEADERS = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+};
+
+const getEnv = () => {
+    // @ts-ignore
+    const db = process.env.DB as unknown as D1Database;
+    // @ts-ignore
+    const vectorize = process.env.VECTORIZE as unknown as VectorizeIndex;
+    if (!db || !vectorize) throw new Error('Bindings not found');
+    return { db, vectorize };
+}
+
+export async function OPTIONS() {
+    return new NextResponse(null, { status: 200, headers: CORS_HEADERS });
+}
 
 export async function GET(request: NextRequest) {
     try {
+        const { db, vectorize } = getEnv();
         const { searchParams } = new URL(request.url);
-        const q = searchParams.get('q');
+        const query = searchParams.get('q');
+        const type = searchParams.get('type') || 'semantic'; // 'semantic' or 'keyword'
 
-        if (!q || q.trim().length === 0) {
-            return NextResponse.json({ notes: [] });
+        if (!query) {
+            return NextResponse.json({ error: 'Query required' }, { status: 400 });
         }
 
-        // Dynamic import to allow hot reload of DB changes if needed
-        const { searchNotes, getNoteTags } = await import('@/lib/db');
+        let results: any[] = [];
 
-        const notes = searchNotes(q);
+        if (type === 'keyword') {
+            results = await searchNotes(db, query);
+        } else {
+            // Semantic Search
+            try {
+                const vector = await generateEmbedding(query);
+                const matches = await searchSimilarNotes(vectorize, vector, 10);
+                results = matches;
+            } catch (aiErr) {
+                console.warn('AI Search failed, falling back to keyword:', aiErr);
+                results = await searchNotes(db, query);
+            }
+        }
 
-        // Attach tags
-        const notesWithTags = notes.map(note => ({
-            ...note,
-            tags: getNoteTags(Number(note.id))
-        }));
-
-        return NextResponse.json({ notes: notesWithTags });
-    } catch (error) {
-        console.error('Search error:', error);
-        return NextResponse.json(
-            { error: 'Search failed' },
-            { status: 500 }
-        );
+        return NextResponse.json({ results }, { headers: CORS_HEADERS });
+    } catch (e) {
+        return NextResponse.json({ error: String(e) }, { status: 500, headers: CORS_HEADERS });
     }
 }

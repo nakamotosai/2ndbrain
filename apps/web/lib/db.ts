@@ -1,39 +1,19 @@
-import Database from 'better-sqlite3';
-import path from 'path';
-import fs from 'fs';
+import type { D1Database } from '@cloudflare/workers-types';
 
-// 数据库文件路径
-const DB_PATH = path.join(process.cwd(), 'data', 'db.sqlite');
+// ==================== Schema & Initialization ====================
+// Note: In D1, schema migration is usually done via 'wrangler d1 migrations'
+// heavily recommended over runtime 'CREATE TABLE IF NOT EXISTS'.
+// However, for this migration, we'll keep the SQL commands for reference 
+// or for a simple 'init' endpoint if needed.
 
-// 确保 data 目录存在
-const dataDir = path.dirname(DB_PATH);
-if (!fs.existsSync(dataDir)) {
-  fs.mkdirSync(dataDir, { recursive: true });
-}
-
-// 创建数据库连接 (单例)
-let db: Database.Database | null = null;
-
-export function getDb(): Database.Database {
-  if (!db) {
-    db = new Database(DB_PATH);
-    db.pragma('journal_mode = WAL');
-    initTables();
-  }
-  return db;
-}
-
-// 初始化表结构
-function initTables() {
-  const database = db!;
-
+export async function initTables(db: D1Database) {
   // 笔记表
-  database.exec(`
+  await db.prepare(`
     CREATE TABLE IF NOT EXISTS notes (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       title TEXT NOT NULL,
       summary TEXT,
-      content_path TEXT NOT NULL,
+      content TEXT, -- Storing markdown content directly
       source_url TEXT,
       source_type TEXT DEFAULT 'manual',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -43,44 +23,19 @@ function initTables() {
       is_archived BOOLEAN DEFAULT 0,
       is_deleted BOOLEAN DEFAULT 0
     )
-  `);
-
-  // Migration: Ensure ai_status and sort_order column exists
-  try {
-    const tableInfo = database.prepare("PRAGMA table_info(notes)").all() as any[];
-    const hasAiStatus = tableInfo.some(col => col.name === 'ai_status');
-    if (!hasAiStatus) {
-      database.exec("ALTER TABLE notes ADD COLUMN ai_status TEXT DEFAULT 'pending'");
-    }
-    const hasSortOrder = tableInfo.some(col => col.name === 'sort_order');
-    if (!hasSortOrder) {
-      database.exec("ALTER TABLE notes ADD COLUMN sort_order INTEGER DEFAULT 0");
-      // Initialize sort_order with id (simple default)
-      database.exec("UPDATE notes SET sort_order = id WHERE sort_order = 0");
-    }
-    const hasIsDeleted = tableInfo.some(col => col.name === 'is_deleted');
-    if (!hasIsDeleted) {
-      database.exec("ALTER TABLE notes ADD COLUMN is_deleted BOOLEAN DEFAULT 0");
-    }
-    const hasIsArchived = tableInfo.some(col => col.name === 'is_archived');
-    if (!hasIsArchived) {
-      database.exec("ALTER TABLE notes ADD COLUMN is_archived BOOLEAN DEFAULT 0");
-    }
-  } catch (error) {
-    console.error('Migration error:', error);
-  }
+  `).run();
 
   // 标签表
-  database.exec(`
+  await db.prepare(`
     CREATE TABLE IF NOT EXISTS tags (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT UNIQUE NOT NULL,
       color TEXT DEFAULT '#6366f1'
     )
-  `);
+  `).run();
 
   // 笔记-标签关联表
-  database.exec(`
+  await db.prepare(`
     CREATE TABLE IF NOT EXISTS note_tags (
       note_id INTEGER NOT NULL,
       tag_id INTEGER NOT NULL,
@@ -88,33 +43,32 @@ function initTables() {
       FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE,
       FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
     )
-  `);
+  `).run();
 
   // 来源表 (搜索上下文)
-  database.exec(`
+  await db.prepare(`
     CREATE TABLE IF NOT EXISTS sources (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       note_id INTEGER NOT NULL,
       title TEXT,
       url TEXT,
       snippet TEXT,
-      snippet TEXT,
       FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE
     )
-  `);
+  `).run();
 
-  // 收藏集表 (Collections - Scheme C)
-  database.exec(`
+  // 收藏集表
+  await db.prepare(`
     CREATE TABLE IF NOT EXISTS collections (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT UNIQUE NOT NULL,
       description TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
-  `);
+  `).run();
 
   // 笔记-收藏集关联表
-  database.exec(`
+  await db.prepare(`
     CREATE TABLE IF NOT EXISTS note_collections (
       note_id INTEGER NOT NULL,
       collection_id INTEGER NOT NULL,
@@ -122,24 +76,24 @@ function initTables() {
       FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE,
       FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE
     )
-  `);
+  `).run();
 }
 
-// ==================== CRUD 操作 ====================
+// ==================== Types ====================
 
 export interface Note {
   id?: number;
   title: string;
   summary?: string;
-  content_path: string;
+  content?: string; // New field replacing content_path
   source_url?: string;
   source_type?: string;
   created_at?: string;
   updated_at?: string;
-  ai_status?: 'pending' | 'completed' | 'failed';
+  ai_status?: 'pending' | 'completed' | 'failed' | 'cancelled';
   sort_order?: number;
-  is_archived?: boolean;
-  is_deleted?: boolean;
+  is_archived?: boolean | number;
+  is_deleted?: boolean | number;
 }
 
 export interface Tag {
@@ -148,276 +102,223 @@ export interface Tag {
   color?: string;
 }
 
+export interface Collection {
+  id: number;
+  name: string;
+  description?: string;
+  count?: number;
+}
+
+// ==================== CRUD Operations ====================
+
 // 创建笔记
-export function createNote(note: Omit<Note, 'id' | 'created_at' | 'updated_at'>): number {
-  const db = getDb();
-  const stmt = db.prepare(`
-    INSERT INTO notes (title, summary, content_path, source_url, source_type, ai_status)
-    VALUES (@title, @summary, @content_path, @source_url, @source_type, @ai_status)
-  `);
-  const result = stmt.run({ ...note, ai_status: note.ai_status || 'pending' });
-  // Set initial sort order to equal the ID (puts new items at bottom by default if ASC, or top if DESC logic used)
-  // Let's assume larger sort_order = top. So we might want to find max sort_order + 1.
-  // For simplicity, let's just update it to match ID after insert, effectively 'chronological' by default.
-  // Or better, let's fetch max sort_order.
-  const rowId = result.lastInsertRowid as number;
-  const maxOrder = db.prepare('SELECT MAX(sort_order) as maxVal FROM notes').get() as { maxVal: number };
-  const newOrder = (maxOrder?.maxVal || 0) + 1;
-  db.prepare('UPDATE notes SET sort_order = ? WHERE id = ?').run(newOrder, rowId);
+export async function createNote(db: D1Database, note: Omit<Note, 'id' | 'created_at' | 'updated_at'>): Promise<number> {
+  const { title, summary, content, source_url, source_type, ai_status } = note;
+
+  // 1. Insert Note
+  const result = await db.prepare(`
+    INSERT INTO notes (title, summary, content, source_url, source_type, ai_status)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).bind(title, summary, content || '', source_url, source_type, ai_status || 'pending').run();
+
+  // 2. Get inserted ID (D1 implementation might vary, ensuring we get the ID)
+  // 'result.meta.last_row_id' is typical for D1
+  const rowId = result.meta.last_row_id;
+
+  if (!rowId) throw new Error("Failed to create note");
+
+  // 3. Set sort_order (simulating the max_order logic)
+  const maxOrderResult = await db.prepare('SELECT MAX(sort_order) as maxVal FROM notes').first<{ maxVal: number }>();
+  const newOrder = (maxOrderResult?.maxVal || 0) + 1;
+
+  await db.prepare('UPDATE notes SET sort_order = ? WHERE id = ?').bind(newOrder, rowId).run();
 
   return rowId;
 }
 
-export function deleteNote(id: number, permanent = false): void {
-  const db = getDb();
+export async function deleteNote(db: D1Database, id: number, permanent = false): Promise<void> {
   if (permanent) {
-    db.prepare('DELETE FROM notes WHERE id = ?').run(id);
+    await db.prepare('DELETE FROM notes WHERE id = ?').bind(id).run();
   } else {
-    // Soft delete: Mark as deleted AND un-archive it to ensure it 'moves' to Trash strictly
-    // Or we keep is_archived? Logic says Trash is a separate bucket. 
-    // If we assume mutually exclusive views, setting is_deleted=1 is enough IF queries are correct.
-    // But to be cleaner, let's reset is_archived = 0 so when restored it goes to 'Active' by default, 
-    // unless we strictly want 'Restore to previous state'? 
-    // User requested "Complete redo". Safer to treat Trash as a sink.
-    db.prepare('UPDATE notes SET is_deleted = 1, is_archived = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(id);
+    // Soft delete
+    await db.prepare('UPDATE notes SET is_deleted = 1, is_archived = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+      .bind(id)
+      .run();
   }
 }
 
-export function restoreNote(id: number): void {
-  const db = getDb();
-  // Restore: Un-delete AND Un-archive (move to Active list)
-  // This ensures it reappears in the main list.
-  db.prepare('UPDATE notes SET is_deleted = 0, is_archived = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(id);
+export async function restoreNote(db: D1Database, id: number): Promise<void> {
+  await db.prepare('UPDATE notes SET is_deleted = 0, is_archived = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+    .bind(id)
+    .run();
 }
 
-export function updateNote(id: number, updates: Partial<Note>): void {
-  const db = getDb();
-
-  const safeUpdates: Record<string, any> = { ...updates, id };
+export async function updateNote(db: D1Database, id: number, updates: Partial<Note>): Promise<void> {
   const keys = Object.keys(updates).filter(k => k !== 'id' && k !== 'created_at');
-
   if (keys.length === 0) return;
 
-  // Manual boolean conversion for SQLite
-  for (const key of keys) {
-    const val = (updates as any)[key];
-    if (typeof val === 'boolean') {
-      safeUpdates[key] = val ? 1 : 0;
-    }
-  }
-
-  console.log('[DB] Updating note:', id, safeUpdates);
-
-  const setClause = keys.map(k => `${k} = @${k}`).join(', ');
-  const stmt = db.prepare(`UPDATE notes SET ${setClause}, updated_at = CURRENT_TIMESTAMP WHERE id = @id`);
-  const info = stmt.run(safeUpdates);
-  console.log('[DB] Update result:', info);
-}
-
-export function updateNoteSortOrder(updates: { id: number; sort_order: number }[]): void {
-  const db = getDb();
-  const updateStmt = db.prepare('UPDATE notes SET sort_order = @sort_order WHERE id = @id');
-
-  const transaction = db.transaction((items) => {
-    for (const item of items) {
-      updateStmt.run(item);
-    }
+  const values: any[] = [];
+  const setClauses = keys.map(k => {
+    let val = (updates as any)[k];
+    if (typeof val === 'boolean') val = val ? 1 : 0;
+    values.push(val);
+    return `${k} = ?`;
   });
+  values.push(id); // for WHERE clause
 
-  transaction(updates);
+  const sql = `UPDATE notes SET ${setClauses.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`;
+  await db.prepare(sql).bind(...values).run();
 }
 
-// 获取所有笔记 - Modified to sort by custom order (DESC) then created_at
-export function getNotes(limit = 50, offset = 0): Note[] {
-  const db = getDb();
-  // Active notes: NOT deleted AND NOT archived
-  const stmt = db.prepare(`
+export async function updateNoteSortOrder(db: D1Database, updates: { id: number; sort_order: number }[]): Promise<void> {
+  const stmt = db.prepare('UPDATE notes SET sort_order = ? WHERE id = ?');
+  const batch = updates.map(u => stmt.bind(u.sort_order, u.id));
+  await db.batch(batch);
+}
+
+// 获取所有笔记
+export async function getNotes(db: D1Database, limit = 50, offset = 0): Promise<Note[]> {
+  const { results } = await db.prepare(`
     SELECT * FROM notes 
     WHERE is_deleted = 0 AND is_archived = 0
     ORDER BY sort_order DESC, created_at DESC 
     LIMIT ? OFFSET ?
-  `);
-  return stmt.all(limit, offset) as Note[];
+  `).bind(limit, offset).all<Note>();
+  return results;
 }
 
-export function getArchivedNotes(): Note[] {
-  const db = getDb();
-  // Archived notes: NOT deleted AND IS archived
-  const stmt = db.prepare(`
-        SELECT * FROM notes 
-        WHERE is_archived = 1 AND is_deleted = 0
-        ORDER BY updated_at DESC
-      `);
-  return stmt.all() as Note[];
+export async function getArchivedNotes(db: D1Database): Promise<Note[]> {
+  const { results } = await db.prepare(`
+    SELECT * FROM notes 
+    WHERE is_archived = 1 AND is_deleted = 0
+    ORDER BY updated_at DESC
+  `).all<Note>();
+  return results;
 }
 
-// 清空回收站
-export function emptyTrash(): void {
-  const db = getDb();
-  db.prepare('DELETE FROM notes WHERE is_deleted = 1').run();
+export async function emptyTrash(db: D1Database): Promise<void> {
+  await db.prepare('DELETE FROM notes WHERE is_deleted = 1').run();
 }
 
-export function getDeletedNotes(): Note[] {
-  const db = getDb();
-  // Deleted notes: IS deleted (archive status ignored, but usually we don't care)
-  const stmt = db.prepare(`
-      SELECT * FROM notes 
-      WHERE is_deleted = 1
-      ORDER BY updated_at DESC
-    `);
-  return stmt.all() as Note[];
+export async function getDeletedNotes(db: D1Database): Promise<Note[]> {
+  const { results } = await db.prepare(`
+    SELECT * FROM notes 
+    WHERE is_deleted = 1
+    ORDER BY updated_at DESC
+  `).all<Note>();
+  return results;
 }
 
-// 根据ID获取笔记
-export function getNoteById(id: number): Note | undefined {
-  const db = getDb();
-  // Allow getting deleted notes as well if needed, or filter? 
-  // Usually we still want to view it if we have the ID (e.g. from Trash)
-  const stmt = db.prepare('SELECT * FROM notes WHERE id = ?');
-  return stmt.get(id) as Note | undefined;
+export async function getNoteById(db: D1Database, id: number): Promise<Note | null> {
+  return await db.prepare('SELECT * FROM notes WHERE id = ?').bind(id).first<Note>();
 }
 
-// 获取笔记的标签
-export function getNoteTags(noteId: number): Tag[] {
-  const db = getDb();
-  const stmt = db.prepare(`
+// 标签相关
+export async function getNoteTags(db: D1Database, noteId: number): Promise<Tag[]> {
+  const { results } = await db.prepare(`
     SELECT t.* FROM tags t
     JOIN note_tags nt ON t.id = nt.tag_id
     WHERE nt.note_id = ?
-  `);
-  return stmt.all(noteId) as Tag[];
+  `).bind(noteId).all<Tag>();
+  return results;
 }
 
-// 创建或获取标签
-export function getOrCreateTag(name: string): number {
-  const db = getDb();
-  const existing = db.prepare('SELECT id FROM tags WHERE name = ?').get(name) as { id: number } | undefined;
+export async function getOrCreateTag(db: D1Database, name: string): Promise<number> {
+  const existing = await db.prepare('SELECT id FROM tags WHERE name = ?').bind(name).first<{ id: number }>();
   if (existing) return existing.id;
 
-  const stmt = db.prepare('INSERT INTO tags (name) VALUES (?)');
-  const result = stmt.run(name);
-  return result.lastInsertRowid as number;
+  const result = await db.prepare('INSERT INTO tags (name) VALUES (?)').bind(name).run();
+  return result.meta.last_row_id as number;
 }
 
-// 关联笔记和标签
-export function addTagToNote(noteId: number, tagId: number): void {
-  const db = getDb();
-  const stmt = db.prepare('INSERT OR IGNORE INTO note_tags (note_id, tag_id) VALUES (?, ?)');
-  stmt.run(noteId, tagId);
+export async function addTagToNote(db: D1Database, noteId: number, tagId: number): Promise<void> {
+  await db.prepare('INSERT OR IGNORE INTO note_tags (note_id, tag_id) VALUES (?, ?)').bind(noteId, tagId).run();
 }
 
-// 获取所有标签
-export function getAllTags(): Tag[] {
-  const db = getDb();
-  const stmt = db.prepare('SELECT * FROM tags ORDER BY name');
-  return stmt.all() as Tag[];
+export async function getAllTags(db: D1Database): Promise<Tag[]> {
+  const { results } = await db.prepare('SELECT * FROM tags ORDER BY name').all<Tag>();
+  return results;
 }
 
-// 根据标签过滤笔记 - Sync with sort order
-export function getNotesByTag(tagName: string): Note[] {
-  const db = getDb();
-  const stmt = db.prepare(`
+export async function getNotesByTag(db: D1Database, tagName: string): Promise<Note[]> {
+  const { results } = await db.prepare(`
     SELECT n.* FROM notes n
     JOIN note_tags nt ON n.id = nt.note_id
     JOIN tags t ON nt.tag_id = t.id
     WHERE t.name = ? AND n.is_deleted = 0 AND n.is_archived = 0
     ORDER BY n.sort_order DESC, n.created_at DESC
-  `);
-  return stmt.all(tagName) as Note[];
+  `).bind(tagName).all<Note>();
+  return results;
 }
 
-// 保存搜索上下文来源
-export function addSource(noteId: number, source: { title?: string; url?: string; snippet?: string }): void {
-  const db = getDb();
-  const stmt = db.prepare('INSERT INTO sources (note_id, title, url, snippet) VALUES (?, ?, ?, ?)');
-  stmt.run(noteId, source.title, source.url, source.snippet);
+// Source Context
+export async function addSource(db: D1Database, noteId: number, source: { title?: string; url?: string; snippet?: string }): Promise<void> {
+  await db.prepare('INSERT INTO sources (note_id, title, url, snippet) VALUES (?, ?, ?, ?)').bind(noteId, source.title, source.url, source.snippet).run();
 }
 
-// ==================== Collections Operations ====================
-
-export interface Collection {
-  id: number;
-  name: string;
-  description?: string;
-  count?: number; // computed
+// Collections
+export async function createCollection(db: D1Database, name: string, description?: string): Promise<number> {
+  const result = await db.prepare('INSERT INTO collections (name, description) VALUES (?, ?)').bind(name, description).run();
+  return result.meta.last_row_id as number;
 }
 
-export function createCollection(name: string, description?: string): number {
-  const db = getDb();
-  const stmt = db.prepare('INSERT INTO collections (name, description) VALUES (?, ?)');
-  const result = stmt.run(name, description);
-  return result.lastInsertRowid as number;
-}
-
-export function getCollections(): Collection[] {
-  const db = getDb();
-  // Get collections with note count
-  const stmt = db.prepare(`
+export async function getCollections(db: D1Database): Promise<Collection[]> {
+  const { results } = await db.prepare(`
     SELECT c.*, COUNT(nc.note_id) as count 
     FROM collections c
     LEFT JOIN note_collections nc ON c.id = nc.collection_id
     GROUP BY c.id
     ORDER BY c.name
-  `);
-  return stmt.all() as Collection[];
+  `).all<Collection>();
+  return results;
 }
 
-export function deleteCollection(id: number): void {
-  const db = getDb();
-  db.prepare('DELETE FROM collections WHERE id = ?').run(id);
+export async function deleteCollection(db: D1Database, id: number): Promise<void> {
+  await db.prepare('DELETE FROM collections WHERE id = ?').bind(id).run();
 }
 
-export function addNoteToCollection(noteId: number, collectionId: number): void {
-  const db = getDb();
-  db.prepare('INSERT OR IGNORE INTO note_collections (note_id, collection_id) VALUES (?, ?)').run(noteId, collectionId);
+export async function addNoteToCollection(db: D1Database, noteId: number, collectionId: number): Promise<void> {
+  await db.prepare('INSERT OR IGNORE INTO note_collections (note_id, collection_id) VALUES (?, ?)').bind(noteId, collectionId).run();
 }
 
-export function removeNoteFromCollection(noteId: number, collectionId: number): void {
-  const db = getDb();
-  db.prepare('DELETE FROM note_collections WHERE note_id = ? AND collection_id = ?').run(noteId, collectionId);
+export async function removeNoteFromCollection(db: D1Database, noteId: number, collectionId: number): Promise<void> {
+  await db.prepare('DELETE FROM note_collections WHERE note_id = ? AND collection_id = ?').bind(noteId, collectionId).run();
 }
 
-export function getNotesByCollection(collectionId: number): Note[] {
-  const db = getDb();
-  const stmt = db.prepare(`
+export async function getNotesByCollection(db: D1Database, collectionId: number): Promise<Note[]> {
+  const { results } = await db.prepare(`
     SELECT n.* FROM notes n
     JOIN note_collections nc ON n.id = nc.note_id
     WHERE nc.collection_id = ? AND n.is_deleted = 0 AND n.is_archived = 0
     ORDER BY n.sort_order DESC, n.created_at DESC
-  `);
-  return stmt.all(collectionId) as Note[];
+  `).bind(collectionId).all<Note>();
+  return results;
 }
 
-export function getNoteCollections(noteId: number): Collection[] {
-  const db = getDb();
-  const stmt = db.prepare(`
+export async function getNoteCollections(db: D1Database, noteId: number): Promise<Collection[]> {
+  const { results } = await db.prepare(`
     SELECT c.* FROM collections c
     JOIN note_collections nc ON c.id = nc.collection_id
     WHERE nc.note_id = ?
-  `);
-  return stmt.all(noteId) as Collection[];
+  `).bind(noteId).all<Collection>();
+  return results;
 }
 
-export function getNotesBySource(sourceType: string): Note[] {
-  const db = getDb();
-  // Simple partial match or exact match. stored types: 'twitter', 'youtube', 'web'
-  // extension sends 'twitter'. ingest defaults to 'extension'.
-  // Let's normalize.
-  const stmt = db.prepare(`
-      SELECT * FROM notes 
-      WHERE source_type LIKE ? AND is_deleted = 0 AND is_archived = 0
-      ORDER BY sort_order DESC, created_at DESC
-    `);
-  return stmt.all(`%${sourceType}%`) as Note[];
+export async function getNotesBySource(db: D1Database, sourceType: string): Promise<Note[]> {
+  const { results } = await db.prepare(`
+    SELECT * FROM notes 
+    WHERE source_type LIKE ? AND is_deleted = 0 AND is_archived = 0
+    ORDER BY sort_order DESC, created_at DESC
+  `).bind(`%${sourceType}%`).all<Note>();
+  return results;
 }
 
-export function searchNotes(query: string): Note[] {
-  const db = getDb();
-  const stmt = db.prepare(`
+export async function searchNotes(db: D1Database, query: string): Promise<Note[]> {
+  const pattern = `%${query}%`;
+  const { results } = await db.prepare(`
     SELECT * FROM notes 
     WHERE (title LIKE ? OR summary LIKE ?) AND is_deleted = 0
     ORDER BY created_at DESC
-  `);
-  const pattern = `%${query}%`;
-  return stmt.all(pattern, pattern) as Note[];
+  `).bind(pattern, pattern).all<Note>();
+  return results;
 }

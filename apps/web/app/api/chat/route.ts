@@ -1,96 +1,87 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { searchSimilarNotes } from '@/lib/vector';
 import { getNoteById } from '@/lib/db';
-import { readMarkdown, parseMarkdown } from '@/lib/storage';
 import { generateEmbedding, chatStream, checkOllamaHealth } from '@/lib/ollama';
 
-// CORS 配置
+export const runtime = 'edge';
+
 const CORS_HEADERS = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
 };
 
+const getEnv = () => {
+    // @ts-ignore
+    const db = process.env.DB as unknown as D1Database;
+    // @ts-ignore
+    const vectorize = process.env.VECTORIZE as unknown as VectorizeIndex;
+    if (!db || !vectorize) throw new Error('Bindings not found');
+    return { db, vectorize };
+}
+
 export async function OPTIONS() {
     return new NextResponse(null, { status: 200, headers: CORS_HEADERS });
 }
 
-// RAG 聊天
 export async function POST(request: NextRequest) {
     try {
-        const body = await request.json();
+        const { db, vectorize } = getEnv();
+        const body = await request.json() as any;
         const { query, stream = true } = body;
 
         if (!query) {
-            return NextResponse.json(
-                { error: '查询不能为空' },
-                { status: 400, headers: CORS_HEADERS }
-            );
+            return NextResponse.json({ error: 'Query required' }, { status: 400, headers: CORS_HEADERS });
         }
 
-        // 检查 Ollama 状态
         const isOnline = await checkOllamaHealth();
         if (!isOnline) {
-            return NextResponse.json(
-                { error: 'AI 离线', offline: true },
-                { status: 503, headers: CORS_HEADERS }
-            );
+            return NextResponse.json({ error: 'AI offline', offline: true }, { status: 503, headers: CORS_HEADERS });
         }
 
-        // 1. 生成查询的嵌入向量
         const queryEmbedding = await generateEmbedding(query);
+        const similarNotes = await searchSimilarNotes(vectorize, queryEmbedding, 5);
 
-        // 2. 向量搜索相关笔记
-        const similarNotes = await searchSimilarNotes(queryEmbedding, 5);
-
-        // 3. 获取笔记完整内容构建上下文
         const contextParts: string[] = [];
         for (const note of similarNotes) {
-            const fullNote = getNoteById(note.id);
-            if (fullNote?.content_path) {
-                const markdown = readMarkdown(fullNote.content_path);
-                if (markdown) {
-                    const { body } = parseMarkdown(markdown);
-                    contextParts.push(`## ${note.title}\n${body.substring(0, 1000)}`);
-                }
-            } else {
-                contextParts.push(`## ${note.title}\n${note.summary}`);
+            // Note: getNoteById now returns { content: string, ... } from D1
+            const fullNote = await getNoteById(db, note.id);
+            if (fullNote) {
+                // Use content directly from DB
+                const content = fullNote.content || fullNote.summary || '';
+                contextParts.push(`## ${fullNote.title}\n${content.substring(0, 1000)}`);
             }
         }
 
         const context = contextParts.join('\n\n---\n\n');
 
-        // 4. 构建 RAG 提示词
         const messages = [
             {
-                role: 'system' as const,
-                content: `你是一个智能知识助手。基于用户的知识库内容回答问题。
-如果知识库中没有相关信息，请诚实说明。
-使用中文回答，保持简洁专业。
+                role: 'system',
+                content: `You are a helpful knowledge assistant. Answer based on the Knowledge Base.
+If not found, state it clearly.
+Answer in Chinese. Keep it concise.
 
-## 知识库内容：
-${context || '(暂无相关笔记)'}`,
+## Knowledge Base:
+${context || '(No relevant notes found)'}`
             },
             {
-                role: 'user' as const,
+                role: 'user',
                 content: query,
             },
         ];
 
-        // 5. 流式返回回答
         if (stream) {
             const encoder = new TextEncoder();
             const readable = new ReadableStream({
                 async start(controller) {
                     try {
-                        // 先发送引用的笔记信息
                         controller.enqueue(
-                            encoder.encode(
-                                `data: ${JSON.stringify({ type: 'sources', sources: similarNotes })}\n\n`
-                            )
+                            encoder.encode(`data: ${JSON.stringify({ type: 'sources', sources: similarNotes })}\n\n`)
                         );
 
-                        // 流式生成回答
+                        // Note: chatStream need to be compatible with Edge? 
+                        // Assuming lib/ollama.ts chatStream uses fetch/Response which is Edge compatible.
                         for await (const chunk of chatStream(messages)) {
                             controller.enqueue(
                                 encoder.encode(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`)
@@ -113,28 +104,24 @@ ${context || '(暂无相关笔记)'}`,
                     ...CORS_HEADERS,
                     'Content-Type': 'text/event-stream',
                     'Cache-Control': 'no-cache',
-                    Connection: 'keep-alive',
+                    'Connection': 'keep-alive',
                 },
             });
         }
 
-        // 非流式返回（简化实现）
         let fullResponse = '';
         for await (const chunk of chatStream(messages)) {
             fullResponse += chunk;
         }
 
         return NextResponse.json(
-            {
-                answer: fullResponse,
-                sources: similarNotes,
-            },
+            { answer: fullResponse, sources: similarNotes },
             { headers: CORS_HEADERS }
         );
     } catch (error) {
-        console.error('Chat API 错误:', error);
+        console.error('Chat API Error:', error);
         return NextResponse.json(
-            { error: '聊天失败', details: String(error) },
+            { error: 'Chat failed', details: String(error) },
             { status: 500, headers: CORS_HEADERS }
         );
     }

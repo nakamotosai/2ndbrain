@@ -11,7 +11,10 @@
         "build": "npm run build --workspace=apps/web",
         "dev:ext": "npm run dev --workspace=apps/extension",
         "build:ext": "npm run build --workspace=apps/extension",
-        "lint": "npm run lint --workspaces"
+        "lint": "npm run lint --workspaces",
+        "pages:build": "npm run pages:build --workspace=apps/web",
+        "pages:deploy": "npm run pages:deploy --workspace=apps/web",
+        "pages:dev": "npm run pages:dev --workspace=apps/web"
     },
     "keywords": [
         "ai",
@@ -22,5 +25,8 @@
         "rag"
     ],
     "author": "",
-    "license": "MIT"
+    "license": "MIT",
+    "devDependencies": {
+        "wrangler": "^4.54.0"
+    }
 }
