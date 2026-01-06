@@ -1,6 +1,6 @@
 name = "second-brain"
 compatibility_date = "2024-04-05"
-pages_build_output_dir = ".next"
+pages_build_output_dir = ".vercel/output/static"
 
 # D1 Database Binding
 [[d1_databases]]
@@ -13,9 +13,9 @@ database_id = "f6867778-1ef4-41e3-8b4c-cb0fffa38a02"
 binding = "VECTORIZE"
 index_name = "second-brain-vectors"
 
-# AI Binding (Optional, if we use Cloudflare AI in future, but we use Ollama for now)
+# AI Binding (Optional)
 # [ai]
 # binding = "AI"
 
 [vars]
-# OLLAMA_URL = "ollama.saaaai.com"
+OLLAMA_URL = "https://ollama.saaaai.com"
