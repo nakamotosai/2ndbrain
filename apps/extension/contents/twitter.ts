@@ -45,10 +45,14 @@ function wait(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms))
 }
 
-// 展开折叠的推文内容
+// 展开折叠的推文内容（只在推文区域内操作）
 async function expandCollapsedContent(): Promise<void> {
+    // 只在推文时间线区域内查找，避免触发侧边栏
+    const timeline = document.querySelector('[data-testid="primaryColumn"]')
+    if (!timeline) return
+
     // 查找"显示更多"链接（用于展开长文本）
-    const showMoreLinks = document.querySelectorAll('[data-testid="tweet"] span')
+    const showMoreLinks = timeline.querySelectorAll('[data-testid="tweet"] span')
     showMoreLinks.forEach(span => {
         const text = span.textContent || ''
         if (text === '显示更多' || text === 'Show more' || text === '展开') {
@@ -60,9 +64,9 @@ async function expandCollapsedContent(): Promise<void> {
         }
     })
 
-    // 也点击"显示此线程"等按钮
-    const buttons = document.querySelectorAll('[role="button"]')
-    buttons.forEach(btn => {
+    // 只点击推文内的"显示此线程"按钮，排除侧边栏
+    const tweetButtons = timeline.querySelectorAll('[data-testid="tweet"] [role="button"]')
+    tweetButtons.forEach(btn => {
         const text = btn.textContent || ''
         if (text.includes('显示此线程') || text.includes('Show this thread')) {
             console.log('展开线程...')
@@ -84,7 +88,6 @@ function extractCommentFromTweet(tweet: Element, seenTexts: Set<string>): string
     // 提取文本并保留换行结构
     let text = ''
     if (textElement) {
-        // 遍历子节点获取文本，保留换行
         const walker = document.createTreeWalker(textElement, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT)
         let node: Node | null
         while (node = walker.nextNode()) {
@@ -94,7 +97,6 @@ function extractCommentFromTweet(tweet: Element, seenTexts: Set<string>): string
                 text += '\n'
             }
         }
-        // 如果上述方法没获取到内容，fallback到textContent
         if (!text.trim()) {
             text = textElement.textContent || ''
         }
@@ -106,7 +108,6 @@ function extractCommentFromTweet(tweet: Element, seenTexts: Set<string>): string
     imageElements.forEach(img => {
         const src = img.getAttribute('src')
         if (src && !src.includes('profile_images') && !src.includes('emoji')) {
-            // 获取高清版本的图片URL
             let hdSrc = src
             if (src.includes('format=')) {
                 hdSrc = src.replace(/name=\w+/, 'name=large')
@@ -122,19 +123,13 @@ function extractCommentFromTweet(tweet: Element, seenTexts: Set<string>): string
         const poster = video.getAttribute('poster')
         if (poster) {
             videoInfo = '\n\n  📹 [点击查看视频]'
-            images.push(poster) // 将视频封面也加入图片
+            images.push(poster)
         }
     }
 
-    // 如果既没有文字也没有图片，跳过
     if (!text.trim() && images.length === 0) return null
 
-    // 清理文本：保留有意义的换行
-    const cleanText = text
-        .replace(/\n{3,}/g, '\n\n')  // 多个换行合并为两个
-        .trim()
-
-    // 使用文字前50字符+图片数量作为去重key
+    const cleanText = text.replace(/\n{3,}/g, '\n\n').trim()
     const commentKey = `${cleanText.substring(0, 50)}|${images.length}`
     if (seenTexts.has(commentKey)) return null
     seenTexts.add(commentKey)
@@ -144,12 +139,10 @@ function extractCommentFromTweet(tweet: Element, seenTexts: Set<string>): string
     const handle = handleMatch ? handleMatch[0] : ''
     const displayName = authorFormatted.split('@')[0].trim()
 
-    // 构建评论内容：编号格式
     let comment = `**${displayName}** ${handle}
 
 ${cleanText}${videoInfo}`
 
-    // 添加图片（每张图片一行）
     if (images.length > 0) {
         comment += '\n\n' + images.map(img => `![](${img})`).join('\n')
     }
@@ -157,7 +150,7 @@ ${cleanText}${videoInfo}`
     return comment
 }
 
-// 边滚动边提取评论 - 核心改进
+// 边滚动边提取评论 - 只在主列区域内操作
 async function scrollAndExtractComments(targetCount: number = 30): Promise<string[]> {
     const comments: string[] = []
     const seenTexts = new Set<string>()
@@ -169,17 +162,13 @@ async function scrollAndExtractComments(targetCount: number = 30): Promise<strin
 
     console.log(`开始滚动并提取评论，目标: ${targetCount} 条`)
 
-    // 先展开所有折叠的内容
     await expandCollapsedContent()
 
-    // 提取当前可见的评论
     const extractCurrentComments = async () => {
-        // 先展开折叠内容
         await expandCollapsedContent()
 
         const allTweets = document.querySelectorAll('[data-testid="tweet"]')
         let extracted = 0
-        // 从索引1开始（跳过主推文）
         for (let i = 1; i < allTweets.length && comments.length < targetCount; i++) {
             const comment = extractCommentFromTweet(allTweets[i], seenTexts)
             if (comment) {
@@ -190,7 +179,6 @@ async function scrollAndExtractComments(targetCount: number = 30): Promise<strin
         return extracted
     }
 
-    // 先提取初始可见的
     await extractCurrentComments()
     console.log(`初始提取: ${comments.length} 条评论`)
 
@@ -198,36 +186,40 @@ async function scrollAndExtractComments(targetCount: number = 30): Promise<strin
     const maxRounds = 30
     let lastCommentCount = comments.length
 
+    // 获取主内容列，只在这里面操作
+    const primaryColumn = document.querySelector('[data-testid="primaryColumn"]')
+
     for (let round = 0; round < maxRounds && comments.length < targetCount; round++) {
-        // 向下滚动（大幅度滚动）
         window.scrollBy({ top: window.innerHeight * 1.5, behavior: 'smooth' })
         await wait(800)
 
-        // 点击"显示更多回复"按钮
-        const buttons = document.querySelectorAll('[role="button"]')
-        buttons.forEach(btn => {
-            const text = btn.textContent || ''
-            if (text.includes('显示') || text.includes('Show') || text.includes('更多') || text.includes('replies')) {
-                console.log('点击"显示更多"按钮')
-                    ; (btn as HTMLElement).click()
-            }
-        })
+        // 只点击推文区域内的"显示更多回复"按钮
+        // 使用更精确的选择器，排除侧边栏
+        if (primaryColumn) {
+            const replyButtons = primaryColumn.querySelectorAll('[data-testid="cellInnerDiv"] [role="button"]')
+            replyButtons.forEach(btn => {
+                const text = btn.textContent || ''
+                // 更精确的匹配：只匹配"显示更多回复"或"Show more replies"
+                if (
+                    (text.includes('显示') && text.includes('回复')) ||
+                    (text.includes('Show') && text.includes('repl'))
+                ) {
+                    console.log('点击"显示更多回复"按钮')
+                        ; (btn as HTMLElement).click()
+                }
+            })
+        }
 
         await wait(400)
 
-        // 提取新出现的评论
         const newExtracted = await extractCurrentComments()
-
         console.log(`滚动 ${round + 1}/${maxRounds}, 已提取: ${comments.length} 条评论 (+${newExtracted})`)
 
-        // 只有在已经提取到评论后，才开始计算稳定轮数
-        // 这样可以避免正文太长时误判为无评论
         const isAtBottom = (window.innerHeight + window.scrollY) >= (document.body.scrollHeight - 100)
 
         if (comments.length > 0) {
             if (comments.length === lastCommentCount) {
                 stableRounds++
-                // 如果已到页面底部，只需连续2轮就停止；否则需要5轮
                 const requiredStableRounds = isAtBottom ? 2 : 5
                 if (stableRounds >= requiredStableRounds) {
                     console.log(`连续${stableRounds}轮无新评论，停止滚动`)
@@ -237,8 +229,6 @@ async function scrollAndExtractComments(targetCount: number = 30): Promise<strin
                 stableRounds = 0
             }
         } else {
-            // 还没提取到任何评论，检查是否已到页面底部
-            const isAtBottom = (window.innerHeight + window.scrollY) >= (document.body.scrollHeight - 100)
             if (isAtBottom) {
                 stableRounds++
                 if (stableRounds >= 3) {
@@ -250,9 +240,7 @@ async function scrollAndExtractComments(targetCount: number = 30): Promise<strin
         lastCommentCount = comments.length
     }
 
-    // 滚回顶部
     window.scrollTo({ top: 0, behavior: 'instant' })
-
     console.log(`提取完成，共 ${comments.length} 条评论`)
     return comments
 }
@@ -299,7 +287,6 @@ function extractBaseTweetData(tweetElement: Element): TweetData | null {
         imageElements.forEach(img => {
             const src = img.getAttribute('src')
             if (src && !src.includes('profile_images')) {
-                // 获取高清版本
                 let hdSrc = src
                 if (src.includes('format=')) {
                     hdSrc = src.replace(/name=\w+/, 'name=large')
@@ -362,7 +349,6 @@ async function extractTweetDataWithComments(tweetElement: Element): Promise<Twee
     const tweetData = extractBaseTweetData(tweetElement)
     if (!tweetData) return null
 
-    // 边滚动边提取评论
     tweetData.comments = await scrollAndExtractComments(30)
 
     return tweetData
@@ -386,13 +372,15 @@ function createSaveButton(): HTMLButtonElement {
     justify-content: center;
     width: 34px;
     height: 34px;
+    min-width: 34px;
+    min-height: 34px;
     background: rgb(32, 35, 39);
     color: rgb(29, 155, 240);
     border: none;
     border-radius: 50%;
     cursor: pointer;
     transition: all 0.2s ease;
-    margin-right: 8px;
+    flex-shrink: 0;
   `
 
     button.onmouseover = () => {
@@ -411,7 +399,6 @@ function createSaveButton(): HTMLButtonElement {
 async function sendToLocalServer(tweet: TweetData): Promise<boolean> {
     const serverUrl = await getServerUrl()
 
-    // 主推文的图片和视频（放在正文下方、评论上方）
     let mediaSection = ''
     if (tweet.images.length > 0 || tweet.videoPoster) {
         mediaSection = '\n\n---\n'
@@ -423,7 +410,6 @@ async function sendToLocalServer(tweet: TweetData): Promise<boolean> {
         }
     }
 
-    // 评论区（带编号）
     let commentsSection = ''
     if (tweet.comments && tweet.comments.length > 0) {
         const numberedComments = tweet.comments.map((comment, index) => {
@@ -465,13 +451,34 @@ ${commentsSection}
     }
 }
 
-// 获取服务器地址
+// 获取服务器地址（带错误处理）
 async function getServerUrl(): Promise<string> {
-    return new Promise((resolve) => {
-        chrome.storage.sync.get(['serverUrl'], (result) => {
-            resolve(result.serverUrl || 'https://x.saaaai.com')
+    const defaultUrl = 'https://x.saaaai.com'
+    try {
+        // 检查 chrome 和 chrome.storage 是否可用
+        if (typeof chrome === 'undefined' || !chrome || !chrome.storage || !chrome.storage.sync) {
+            console.log('Chrome storage not available, using default URL')
+            return defaultUrl
+        }
+        return new Promise((resolve) => {
+            try {
+                chrome.storage.sync.get(['serverUrl'], (result) => {
+                    if (chrome.runtime?.lastError) {
+                        console.log('Storage error:', chrome.runtime.lastError)
+                        resolve(defaultUrl)
+                        return
+                    }
+                    resolve(result?.serverUrl || defaultUrl)
+                })
+            } catch (e) {
+                console.log('Storage access error:', e)
+                resolve(defaultUrl)
+            }
         })
-    })
+    } catch (e) {
+        console.log('Extension context error:', e)
+        return defaultUrl
+    }
 }
 
 // 检查是否是主推文
@@ -491,54 +498,35 @@ function injectSaveButtons(): void {
         if (tweet.querySelector('.secondbrain-save-btn')) return
         if (!isMainTweet(tweet)) return
 
-        // 尝试找到 Grok 按钮（带有特定图标的圆形按钮）
-        // Grok 按钮通常在推文右上角区域
         const tweetArticle = tweet.closest('article') || tweet
 
-        // 方法1: 查找右上角的按钮区域（包含三点菜单和 Grok）
+        // 查找右上角的按钮区域（包含三点菜单）
         const caret = tweetArticle.querySelector('[data-testid="caret"]')
         if (caret) {
-            const caretParent = caret.closest('div[role="button"]')?.parentElement
-            if (caretParent && !caretParent.querySelector('.secondbrain-save-btn')) {
-                const saveButton = createSaveButton()
+            // 找到 caret 的 button 父元素
+            const caretButton = caret.closest('button') || caret.closest('[role="button"]')
+            if (caretButton) {
+                // 找到包含所有右侧按钮的容器
+                const buttonsContainer = caretButton.parentElement
+                if (buttonsContainer && !buttonsContainer.querySelector('.secondbrain-save-btn')) {
+                    // 确保容器是 flex 横向排列
+                    const containerStyle = window.getComputedStyle(buttonsContainer)
+                    if (containerStyle.display !== 'flex') {
+                        (buttonsContainer as HTMLElement).style.display = 'flex'
+                            (buttonsContainer as HTMLElement).style.alignItems = 'center'
+                                (buttonsContainer as HTMLElement).style.gap = '4px'
+                    }
 
-                saveButton.onclick = async (e) => {
-                    e.preventDefault()
-                    e.stopPropagation()
-                    handleSaveClick(saveButton, tweet)
-                }
-
-                // 插入到 caret 按钮前面
-                caretParent.insertBefore(saveButton, caretParent.firstChild)
-                return
-            }
-        }
-
-        // 方法2: 查找用户名行右侧区域
-        const userNameContainer = tweet.querySelector('[data-testid="User-Name"]')
-        if (userNameContainer) {
-            // 向上查找包含整行的容器
-            let rowContainer = userNameContainer.parentElement
-            while (rowContainer && !rowContainer.querySelector('[data-testid="caret"]')) {
-                rowContainer = rowContainer.parentElement
-            }
-
-            if (rowContainer) {
-                const existingBtn = rowContainer.querySelector('.secondbrain-save-btn')
-                if (!existingBtn) {
                     const saveButton = createSaveButton()
-
                     saveButton.onclick = async (e) => {
                         e.preventDefault()
                         e.stopPropagation()
                         handleSaveClick(saveButton, tweet)
                     }
 
-                    // 尝试找到按钮区域并插入
-                    const buttonArea = rowContainer.querySelector('[data-testid="caret"]')?.parentElement?.parentElement
-                    if (buttonArea) {
-                        buttonArea.insertBefore(saveButton, buttonArea.firstChild)
-                    }
+                    // 插入到容器最前面（Grok/caret 按钮左边）
+                    buttonsContainer.insertBefore(saveButton, buttonsContainer.firstChild)
+                    return
                 }
             }
         }
@@ -547,7 +535,6 @@ function injectSaveButtons(): void {
 
 // 处理保存按钮点击
 async function handleSaveClick(saveButton: HTMLButtonElement, tweet: Element): Promise<void> {
-    // 显示加载状态
     const originalContent = saveButton.innerHTML
     saveButton.innerHTML = `
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="animate-spin">
@@ -557,16 +544,18 @@ async function handleSaveClick(saveButton: HTMLButtonElement, tweet: Element): P
     saveButton.style.color = '#fbbf24'
     saveButton.style.pointerEvents = 'none'
 
-    // 添加旋转动画
     const style = document.createElement('style')
-    style.textContent = `
-        @keyframes spin {
-            from { transform: rotate(0deg); }
-            to { transform: rotate(360deg); }
-        }
-        .animate-spin { animation: spin 1s linear infinite; }
-    `
-    document.head.appendChild(style)
+    style.id = 'secondbrain-spin-style'
+    if (!document.getElementById('secondbrain-spin-style')) {
+        style.textContent = `
+            @keyframes spin {
+                from { transform: rotate(0deg); }
+                to { transform: rotate(360deg); }
+            }
+            .animate-spin { animation: spin 1s linear infinite; }
+        `
+        document.head.appendChild(style)
+    }
 
     const tweetData = await extractTweetDataWithComments(tweet)
 
@@ -592,7 +581,6 @@ async function handleSaveClick(saveButton: HTMLButtonElement, tweet: Element): P
     const success = await sendToLocalServer(tweetData)
 
     if (success) {
-        // 成功状态
         saveButton.innerHTML = `
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <polyline points="20 6 9 17 4 12"/>
@@ -608,7 +596,6 @@ async function handleSaveClick(saveButton: HTMLButtonElement, tweet: Element): P
             saveButton.title = '保存到第二大脑'
         }, 3000)
     } else {
-        // 失败状态
         saveButton.innerHTML = `
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <circle cx="12" cy="12" r="10"/>
