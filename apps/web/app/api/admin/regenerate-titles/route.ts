@@ -1,17 +1,18 @@
 import { NextResponse } from 'next/server';
+import { getDB } from '@/lib/cloudflare';
 import { updateNote } from '@/lib/db';
 import { generateTitle } from '@/lib/ollama';
 
 export const runtime = 'edge';
 
-// Helper to get DB from env
-const getDB = () => {
-    // @ts-ignore
-    const db = process.env.DB as unknown as D1Database;
-    if (!db) {
-        throw new Error('Database binding (DB) not found.');
-    }
-    return db;
+const CORS_HEADERS = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+};
+
+export async function OPTIONS() {
+    return new NextResponse(null, { status: 200, headers: CORS_HEADERS });
 }
 
 export async function POST() {
@@ -19,8 +20,6 @@ export async function POST() {
     try {
         const db = getDB();
 
-        // Get all active notes
-        // Note: D1 .all() syntax
         const { results } = await db.prepare('SELECT id, title, content, summary FROM notes WHERE is_deleted = 0').all<any>();
 
         console.log(`Found ${results.length} notes`);
@@ -28,11 +27,9 @@ export async function POST() {
         let updatedCount = 0;
 
         for (const note of results) {
-            // Check conditions
             if (note.title.length > 15 || note.title.includes('一句话核心') || note.title.includes('Twitter')) {
                 console.log(`Processing[${note.id}]`);
 
-                // Content is now in DB
                 const content = note.content || '';
                 const textToProcess = content || note.summary || '';
 
@@ -52,9 +49,9 @@ export async function POST() {
                 }
             }
         }
-        return NextResponse.json({ success: true, updated: updatedCount });
+        return NextResponse.json({ success: true, updated: updatedCount }, { headers: CORS_HEADERS });
     } catch (e) {
         console.error(`Fatal Error: ${e} `);
-        return NextResponse.json({ error: String(e) }, { status: 500 });
+        return NextResponse.json({ error: String(e) }, { status: 500, headers: CORS_HEADERS });
     }
 }

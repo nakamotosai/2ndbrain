@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getDB } from '@/lib/cloudflare';
 import { addNoteToCollection, removeNoteFromCollection } from '@/lib/db';
 
 export const runtime = 'edge';
@@ -8,13 +9,6 @@ const CORS_HEADERS = {
     'Access-Control-Allow-Methods': 'POST, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
 };
-
-const getDB = () => {
-    // @ts-ignore
-    const db = process.env.DB as unknown as D1Database;
-    if (!db) throw new Error('DB binding not found');
-    return db;
-}
 
 export async function OPTIONS() {
     return new NextResponse(null, { status: 200, headers: CORS_HEADERS });
@@ -46,7 +40,7 @@ export async function DELETE(
         const { searchParams } = new URL(request.url);
         const noteId = parseInt(searchParams.get('noteId') || '0');
 
-        if (!noteId) return NextResponse.json({ error: 'Note ID required' }, { status: 400 });
+        if (!noteId) return NextResponse.json({ error: 'Note ID required' }, { status: 400, headers: CORS_HEADERS });
 
         await removeNoteFromCollection(db, noteId, collectionId);
         return NextResponse.json({ success: true }, { headers: CORS_HEADERS });

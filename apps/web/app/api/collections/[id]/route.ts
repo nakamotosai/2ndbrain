@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getDB } from '@/lib/cloudflare';
 import { deleteCollection } from '@/lib/db';
 
 export const runtime = 'edge';
@@ -8,13 +9,6 @@ const CORS_HEADERS = {
     'Access-Control-Allow-Methods': 'DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
 };
-
-const getDB = () => {
-    // @ts-ignore
-    const db = process.env.DB as unknown as D1Database;
-    if (!db) throw new Error('DB binding not found');
-    return db;
-}
 
 export async function OPTIONS() {
     return new NextResponse(null, { status: 200, headers: CORS_HEADERS });

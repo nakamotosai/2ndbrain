@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getDB } from '@/lib/cloudflare';
 import { getNotes, getNoteById, getNoteTags, getNotesByTag, getAllTags, getDeletedNotes, getArchivedNotes, getNotesByCollection, getNotesBySource, getNoteCollections, deleteNote, restoreNote, updateNote, updateNoteSortOrder, emptyTrash } from '@/lib/db';
-import type { CloudflareEnv } from '@/env';
 
 export const runtime = 'edge';
 
@@ -10,16 +10,6 @@ const CORS_HEADERS = {
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS, DELETE, PATCH',
     'Access-Control-Allow-Headers': 'Content-Type',
 };
-
-// Helper to get DB from env
-const getDB = () => {
-    // @ts-ignore - Cloudflare bindings are available in process.env in some setups or global env
-    const db = process.env.DB as unknown as D1Database;
-    if (!db) {
-        throw new Error('Database binding (DB) not found. Ensure you are running in a Cloudflare environment or Wrangler.');
-    }
-    return db;
-}
 
 export async function OPTIONS() {
     return new NextResponse(null, { status: 200, headers: CORS_HEADERS });
@@ -42,11 +32,9 @@ export async function GET(request: NextRequest) {
                 );
             }
 
-            // 获取标签
             const tags = await getNoteTags(db, parseInt(noteId));
             const collections = await getNoteCollections(db, parseInt(noteId));
 
-            // Content is now directly in the note object
             return NextResponse.json(
                 { ...note, tags, collections },
                 { headers: CORS_HEADERS }
@@ -66,7 +54,7 @@ export async function GET(request: NextRequest) {
         const trash = searchParams.get('trash');
         const archived = searchParams.get('archived');
         const collectionId = searchParams.get('collectionId');
-        const source = searchParams.get('source'); // 'twitter', 'youtube', 'web'
+        const source = searchParams.get('source');
         const tagFilter = searchParams.get('tag');
 
         if (trash === 'true') {
@@ -80,7 +68,6 @@ export async function GET(request: NextRequest) {
         } else if (tagFilter) {
             notes = await getNotesByTag(db, tagFilter);
         } else {
-            // 默认分页获取列表
             const page = parseInt(searchParams.get('page') || '1');
             const limit = parseInt(searchParams.get('limit') || '50');
             const offset = (page - 1) * limit;
@@ -120,7 +107,6 @@ export async function DELETE(request: NextRequest) {
         const action = searchParams.get('action');
         const permanent = searchParams.get('permanent') === 'true';
 
-        // Empty Trash Logic
         if (action === 'emptyTrash') {
             await emptyTrash(db);
             return NextResponse.json({ success: true }, { headers: CORS_HEADERS });
@@ -145,7 +131,6 @@ export async function PATCH(request: NextRequest) {
         const db = getDB();
         const body = await request.json() as any;
 
-        // Batch update sort order
         if (Array.isArray(body)) {
             await updateNoteSortOrder(db, body);
             return NextResponse.json({ success: true }, { headers: CORS_HEADERS });
@@ -153,7 +138,6 @@ export async function PATCH(request: NextRequest) {
 
         const { id, sort_order, restore } = body;
 
-        // Restore logic
         if (id && restore) {
             await restoreNote(db, id);
             return NextResponse.json({ success: true }, { headers: CORS_HEADERS });

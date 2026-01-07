@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getCloudflareEnv } from '@/lib/cloudflare';
 import { createNote, getOrCreateTag, addTagToNote, addSource, updateNote, getNoteById, type Note } from '@/lib/db';
 import { addNoteEmbedding } from '@/lib/vector';
 import { summarize, generateTags, generateEmbedding, checkOllamaHealth, generateTitle } from '@/lib/ollama';
-import type { CloudflareEnv } from '@/env';
 
 export const runtime = 'edge';
 
@@ -13,26 +13,13 @@ const CORS_HEADERS = {
     'Access-Control-Allow-Headers': 'Content-Type',
 };
 
-// Helper to get Env
-const getEnv = () => {
-    // @ts-ignore
-    const db = process.env.DB as unknown as D1Database;
-    // @ts-ignore
-    const vectorize = process.env.VECTORIZE as unknown as VectorizeIndex;
-
-    if (!db || !vectorize) {
-        throw new Error('Bindings (DB or VECTORIZE) not found.');
-    }
-    return { db, vectorize };
-}
-
 export async function OPTIONS() {
     return new NextResponse(null, { status: 200, headers: CORS_HEADERS });
 }
 
 export async function POST(request: NextRequest) {
     try {
-        const { db, vectorize } = getEnv();
+        const { DB: db, VECTORIZE: vectorize } = getCloudflareEnv();
         const body = await request.json() as any;
         const { content, title, source_url, source_type = 'extension', context } = body;
 
@@ -46,20 +33,16 @@ export async function POST(request: NextRequest) {
         // 1. Save initial Note to D1
         const tempTitle = title || 'New Note (Processing...)';
 
-        // Note: content is now stored directly in DB, no file needed.
         const noteId = await createNote(db, {
             title: tempTitle,
             summary: '',
-            content: content, // Save content directly
+            content: content,
             source_url,
             source_type,
             ai_status: 'pending'
         });
 
-        // 2. Process AI (Synchronously for reliability on Edge)
-        // In a real production edge app, we might use Queues, but await is simplest for migration.
-        // We will catch errors here so we return success even if AI fails partialy.
-
+        // 2. Process AI
         try {
             await processAI(db, vectorize, noteId, content, context, tempTitle);
         } catch (aiErr) {
@@ -72,7 +55,7 @@ export async function POST(request: NextRequest) {
                 success: true,
                 noteId,
                 title: tempTitle,
-                status: 'completed', // or pending if using queues
+                status: 'completed',
                 message: 'Saved and processed.'
             },
             { status: 201, headers: CORS_HEADERS }
@@ -94,8 +77,6 @@ async function processAI(
     context: any[],
     originalTitle: string
 ) {
-    // Check if Note exists (it just created)
-    // Check Ollama Health
     const isOllamaOnline = await checkOllamaHealth();
 
     let summary = '';
@@ -105,7 +86,6 @@ async function processAI(
 
     if (isOllamaOnline) {
         try {
-            // Generate in parallel
             const results = await Promise.all([
                 summarize(content),
                 generateTags(content),
@@ -113,8 +93,6 @@ async function processAI(
             ]);
 
             [summary, tags, embedding] = results;
-
-            // Generate Title
             noteTitle = await generateTitle(content);
             if (!noteTitle) noteTitle = originalTitle;
 

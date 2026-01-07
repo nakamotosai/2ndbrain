@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getCloudflareEnv } from '@/lib/cloudflare';
 import { searchSimilarNotes } from '@/lib/vector';
 import { getNoteById } from '@/lib/db';
 import { generateEmbedding, chatStream, checkOllamaHealth } from '@/lib/ollama';
@@ -11,22 +12,13 @@ const CORS_HEADERS = {
     'Access-Control-Allow-Headers': 'Content-Type',
 };
 
-const getEnv = () => {
-    // @ts-ignore
-    const db = process.env.DB as unknown as D1Database;
-    // @ts-ignore
-    const vectorize = process.env.VECTORIZE as unknown as VectorizeIndex;
-    if (!db || !vectorize) throw new Error('Bindings not found');
-    return { db, vectorize };
-}
-
 export async function OPTIONS() {
     return new NextResponse(null, { status: 200, headers: CORS_HEADERS });
 }
 
 export async function POST(request: NextRequest) {
     try {
-        const { db, vectorize } = getEnv();
+        const { DB: db, VECTORIZE: vectorize } = getCloudflareEnv();
         const body = await request.json() as any;
         const { query, stream = true } = body;
 
@@ -44,10 +36,8 @@ export async function POST(request: NextRequest) {
 
         const contextParts: string[] = [];
         for (const note of similarNotes) {
-            // Note: getNoteById now returns { content: string, ... } from D1
             const fullNote = await getNoteById(db, note.id);
             if (fullNote) {
-                // Use content directly from DB
                 const content = fullNote.content || fullNote.summary || '';
                 contextParts.push(`## ${fullNote.title}\n${content.substring(0, 1000)}`);
             }
@@ -80,8 +70,6 @@ ${context || '(No relevant notes found)'}`
                             encoder.encode(`data: ${JSON.stringify({ type: 'sources', sources: similarNotes })}\n\n`)
                         );
 
-                        // Note: chatStream need to be compatible with Edge? 
-                        // Assuming lib/ollama.ts chatStream uses fetch/Response which is Edge compatible.
                         for await (const chunk of chatStream(messages)) {
                             controller.enqueue(
                                 encoder.encode(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`)

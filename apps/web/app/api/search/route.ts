@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getCloudflareEnv } from '@/lib/cloudflare';
 import { searchNotes } from '@/lib/db';
 import { searchSimilarNotes } from '@/lib/vector';
 import { generateEmbedding } from '@/lib/ollama';
@@ -11,28 +12,19 @@ const CORS_HEADERS = {
     'Access-Control-Allow-Headers': 'Content-Type',
 };
 
-const getEnv = () => {
-    // @ts-ignore
-    const db = process.env.DB as unknown as D1Database;
-    // @ts-ignore
-    const vectorize = process.env.VECTORIZE as unknown as VectorizeIndex;
-    if (!db || !vectorize) throw new Error('Bindings not found');
-    return { db, vectorize };
-}
-
 export async function OPTIONS() {
     return new NextResponse(null, { status: 200, headers: CORS_HEADERS });
 }
 
 export async function GET(request: NextRequest) {
     try {
-        const { db, vectorize } = getEnv();
+        const { DB: db, VECTORIZE: vectorize } = getCloudflareEnv();
         const { searchParams } = new URL(request.url);
         const query = searchParams.get('q');
-        const type = searchParams.get('type') || 'semantic'; // 'semantic' or 'keyword'
+        const type = searchParams.get('type') || 'semantic';
 
         if (!query) {
-            return NextResponse.json({ error: 'Query required' }, { status: 400 });
+            return NextResponse.json({ error: 'Query required' }, { status: 400, headers: CORS_HEADERS });
         }
 
         let results: any[] = [];
@@ -40,7 +32,6 @@ export async function GET(request: NextRequest) {
         if (type === 'keyword') {
             results = await searchNotes(db, query);
         } else {
-            // Semantic Search
             try {
                 const vector = await generateEmbedding(query);
                 const matches = await searchSimilarNotes(vectorize, vector, 10);
