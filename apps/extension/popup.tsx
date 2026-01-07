@@ -6,7 +6,7 @@ interface HealthStatus {
 }
 
 function IndexPopup() {
-  const [serverUrl, setServerUrl] = useState("http://localhost:3000")
+  const [serverUrl, setServerUrl] = useState("https://x.saaaai.com")
   const [health, setHealth] = useState<HealthStatus>({ online: false, ollama: false })
   const [checking, setChecking] = useState(true)
   const [saved, setSaved] = useState(false)
@@ -70,7 +70,7 @@ function IndexPopup() {
         </div>
         <div>
           <h1 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>第二大脑</h1>
-          <p style={{ margin: 0, fontSize: 12, color: "#94a3b8" }}>本地AI知识库</p>
+          <p style={{ margin: 0, fontSize: 12, color: "#94a3b8" }}>云端AI知识库</p>
         </div>
       </div>
 
@@ -132,7 +132,7 @@ function IndexPopup() {
           type="text"
           value={serverUrl}
           onChange={(e) => setServerUrl(e.target.value)}
-          placeholder="http://localhost:3000"
+          placeholder="https://x.saaaai.com"
           style={{
             width: "100%",
             padding: "8px 12px",
@@ -177,7 +177,7 @@ function IndexPopup() {
           textAlign: "center",
         }}
       >
-        在 Twitter 上点击 "保存" 按钮将内容保存到知识库
+        在 Twitter 上点击圆形保存按钮将内容保存到知识库
       </div>
     </div>
   )

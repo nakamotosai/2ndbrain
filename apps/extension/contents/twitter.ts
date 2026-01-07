@@ -368,47 +368,46 @@ async function extractTweetDataWithComments(tweetElement: Element): Promise<Twee
     return tweetData
 }
 
-// 创建保存按钮
+// 创建圆形保存按钮（匹配 Grok 按钮样式）
 function createSaveButton(): HTMLButtonElement {
     const button = document.createElement('button')
     button.className = 'secondbrain-save-btn'
     button.innerHTML = `
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
       <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
       <polyline points="17 21 17 13 7 13 7 21"/>
       <polyline points="7 3 7 8 15 8"/>
     </svg>
-    <span>保存</span>
   `
+    button.title = '保存到第二大脑'
     button.style.cssText = `
-    display: inline-flex;
+    display: flex;
     align-items: center;
-    gap: 4px;
-    padding: 4px 12px;
-    background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
-    color: white;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    background: rgb(32, 35, 39);
+    color: rgb(29, 155, 240);
     border: none;
-    border-radius: 9999px;
-    font-size: 13px;
-    font-weight: 500;
+    border-radius: 50%;
     cursor: pointer;
-    transition: all 0.2s;
-    margin-left: 8px;
+    transition: all 0.2s ease;
+    margin-right: 8px;
   `
 
     button.onmouseover = () => {
-        button.style.transform = 'scale(1.05)'
-        button.style.boxShadow = '0 4px 12px rgba(99, 102, 241, 0.4)'
+        button.style.background = 'rgba(29, 155, 240, 0.1)'
+        button.style.transform = 'scale(1.1)'
     }
     button.onmouseout = () => {
+        button.style.background = 'rgb(32, 35, 39)'
         button.style.transform = 'scale(1)'
-        button.style.boxShadow = 'none'
     }
 
     return button
 }
 
-// 发送到本地服务器
+// 发送到服务器
 async function sendToLocalServer(tweet: TweetData): Promise<boolean> {
     const serverUrl = await getServerUrl()
 
@@ -470,7 +469,7 @@ ${commentsSection}
 async function getServerUrl(): Promise<string> {
     return new Promise((resolve) => {
         chrome.storage.sync.get(['serverUrl'], (result) => {
-            resolve(result.serverUrl || 'http://localhost:3000')
+            resolve(result.serverUrl || 'https://x.saaaai.com')
         })
     })
 }
@@ -484,7 +483,7 @@ function isMainTweet(tweetElement: Element): boolean {
     return allTweets.length > 0 && allTweets[0] === tweetElement
 }
 
-// 注入保存按钮
+// 注入保存按钮到 Grok 按钮左侧
 function injectSaveButtons(): void {
     const tweets = document.querySelectorAll('[data-testid="tweet"]')
 
@@ -492,84 +491,141 @@ function injectSaveButtons(): void {
         if (tweet.querySelector('.secondbrain-save-btn')) return
         if (!isMainTweet(tweet)) return
 
-        const userLine = tweet.querySelector('[data-testid="User-Name"]');
-        if (!userLine) return;
+        // 尝试找到 Grok 按钮（带有特定图标的圆形按钮）
+        // Grok 按钮通常在推文右上角区域
+        const tweetArticle = tweet.closest('article') || tweet
 
-        const topRow = userLine.closest('div[id^="id__"]')?.parentElement || userLine.parentElement;
-        if (!topRow) return;
+        // 方法1: 查找右上角的按钮区域（包含三点菜单和 Grok）
+        const caret = tweetArticle.querySelector('[data-testid="caret"]')
+        if (caret) {
+            const caretParent = caret.closest('div[role="button"]')?.parentElement
+            if (caretParent && !caretParent.querySelector('.secondbrain-save-btn')) {
+                const saveButton = createSaveButton()
 
-        const saveButton = createSaveButton();
-        saveButton.style.marginLeft = 'auto';
-        saveButton.style.marginRight = '8px';
-        saveButton.style.padding = '2px 10px';
-        saveButton.style.fontSize = '12px';
+                saveButton.onclick = async (e) => {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    handleSaveClick(saveButton, tweet)
+                }
 
-        saveButton.onclick = async (e) => {
-            e.preventDefault()
-            e.stopPropagation()
-
-            saveButton.innerHTML = '⏳ 加载评论...'
-            saveButton.style.opacity = '0.7'
-            saveButton.style.pointerEvents = 'none'
-
-            const tweetData = await extractTweetDataWithComments(tweet)
-
-            if (!tweetData) {
-                alert('无法提取推文数据')
-                saveButton.innerHTML = `
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
-                  <polyline points="17 21 17 13 7 13 7 21"/>
-                  <polyline points="7 3 7 8 15 8"/>
-                </svg>
-                <span>保存</span>
-              `
-                saveButton.style.opacity = '1'
-                saveButton.style.pointerEvents = 'auto'
+                // 插入到 caret 按钮前面
+                caretParent.insertBefore(saveButton, caretParent.firstChild)
                 return
-            }
-
-            saveButton.innerHTML = `⏳ 保存中 (${tweetData.comments?.length || 0}条评论)`
-
-            const success = await sendToLocalServer(tweetData)
-
-            if (success) {
-                saveButton.innerHTML = `✅ 已保存 ${tweetData.comments?.length || 0}条评论`
-                saveButton.style.background = 'linear-gradient(135deg, #10b981 0%, #059669 100%)'
-                setTimeout(() => {
-                    saveButton.innerHTML = `
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
-              <polyline points="17 21 17 13 7 13 7 21"/>
-              <polyline points="7 3 7 8 15 8"/>
-            </svg>
-            <span>保存</span>
-          `
-                    saveButton.style.background = 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)'
-                    saveButton.style.opacity = '1'
-                    saveButton.style.pointerEvents = 'auto'
-                }, 2000)
-            } else {
-                saveButton.innerHTML = '❌ 保存失败'
-                saveButton.style.background = 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)'
-                setTimeout(() => {
-                    saveButton.innerHTML = `
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
-              <polyline points="17 21 17 13 7 13 7 21"/>
-              <polyline points="7 3 7 8 15 8"/>
-            </svg>
-            <span>保存</span>
-          `
-                    saveButton.style.background = 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)'
-                    saveButton.style.opacity = '1'
-                    saveButton.style.pointerEvents = 'auto'
-                }, 2000)
             }
         }
 
-        topRow.appendChild(saveButton);
+        // 方法2: 查找用户名行右侧区域
+        const userNameContainer = tweet.querySelector('[data-testid="User-Name"]')
+        if (userNameContainer) {
+            // 向上查找包含整行的容器
+            let rowContainer = userNameContainer.parentElement
+            while (rowContainer && !rowContainer.querySelector('[data-testid="caret"]')) {
+                rowContainer = rowContainer.parentElement
+            }
+
+            if (rowContainer) {
+                const existingBtn = rowContainer.querySelector('.secondbrain-save-btn')
+                if (!existingBtn) {
+                    const saveButton = createSaveButton()
+
+                    saveButton.onclick = async (e) => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        handleSaveClick(saveButton, tweet)
+                    }
+
+                    // 尝试找到按钮区域并插入
+                    const buttonArea = rowContainer.querySelector('[data-testid="caret"]')?.parentElement?.parentElement
+                    if (buttonArea) {
+                        buttonArea.insertBefore(saveButton, buttonArea.firstChild)
+                    }
+                }
+            }
+        }
     })
+}
+
+// 处理保存按钮点击
+async function handleSaveClick(saveButton: HTMLButtonElement, tweet: Element): Promise<void> {
+    // 显示加载状态
+    const originalContent = saveButton.innerHTML
+    saveButton.innerHTML = `
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="animate-spin">
+            <circle cx="12" cy="12" r="10" stroke-dasharray="32" stroke-dashoffset="12"/>
+        </svg>
+    `
+    saveButton.style.color = '#fbbf24'
+    saveButton.style.pointerEvents = 'none'
+
+    // 添加旋转动画
+    const style = document.createElement('style')
+    style.textContent = `
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+        .animate-spin { animation: spin 1s linear infinite; }
+    `
+    document.head.appendChild(style)
+
+    const tweetData = await extractTweetDataWithComments(tweet)
+
+    if (!tweetData) {
+        saveButton.innerHTML = `
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"/>
+                <line x1="15" y1="9" x2="9" y2="15"/>
+                <line x1="9" y1="9" x2="15" y2="15"/>
+            </svg>
+        `
+        saveButton.style.color = '#ef4444'
+        saveButton.title = '提取失败'
+        setTimeout(() => {
+            saveButton.innerHTML = originalContent
+            saveButton.style.color = 'rgb(29, 155, 240)'
+            saveButton.style.pointerEvents = 'auto'
+            saveButton.title = '保存到第二大脑'
+        }, 2000)
+        return
+    }
+
+    const success = await sendToLocalServer(tweetData)
+
+    if (success) {
+        // 成功状态
+        saveButton.innerHTML = `
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="20 6 9 17 4 12"/>
+            </svg>
+        `
+        saveButton.style.color = '#22c55e'
+        saveButton.title = `已保存 (${tweetData.comments?.length || 0}条评论)`
+
+        setTimeout(() => {
+            saveButton.innerHTML = originalContent
+            saveButton.style.color = 'rgb(29, 155, 240)'
+            saveButton.style.pointerEvents = 'auto'
+            saveButton.title = '保存到第二大脑'
+        }, 3000)
+    } else {
+        // 失败状态
+        saveButton.innerHTML = `
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"/>
+                <line x1="12" y1="8" x2="12" y2="12"/>
+                <line x1="12" y1="16" x2="12.01" y2="16"/>
+            </svg>
+        `
+        saveButton.style.color = '#ef4444'
+        saveButton.title = '保存失败，请检查服务器连接'
+
+        setTimeout(() => {
+            saveButton.innerHTML = originalContent
+            saveButton.style.color = 'rgb(29, 155, 240)'
+            saveButton.style.pointerEvents = 'auto'
+            saveButton.title = '保存到第二大脑'
+        }, 3000)
+    }
 }
 
 // 使用 MutationObserver 监听新推文

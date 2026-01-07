@@ -6,10 +6,10 @@ import type { PlasmoMessaging } from "@anthropic/plasmo"
 chrome.runtime.onInstalled.addListener(() => {
     chrome.contextMenus.create({
         id: "save-to-cortex",
-        title: "保存到 Cortex",
+        title: "保存到第二大脑",
         contexts: ["selection", "page"],
     })
-    console.log("🧠 Cortex Background Service Worker initialized")
+    console.log("🧠 第二大脑 Background Service Worker initialized")
 })
 
 // 处理右键菜单点击
@@ -33,7 +33,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     }
 })
 
-// 发送到本地服务器
+// 发送到服务器
 async function saveToLocalServer(data: {
     content: string
     title: string
@@ -56,7 +56,7 @@ async function saveToLocalServer(data: {
             chrome.notifications?.create({
                 type: "basic",
                 iconUrl: chrome.runtime.getURL("assets/icon.png"),
-                title: "Cortex",
+                title: "第二大脑",
                 message: "内容已保存到知识库",
             })
         }
@@ -67,7 +67,7 @@ async function saveToLocalServer(data: {
         chrome.notifications?.create({
             type: "basic",
             iconUrl: chrome.runtime.getURL("assets/icon.png"),
-            title: "Cortex",
+            title: "第二大脑",
             message: "保存失败，请检查服务器是否运行",
         })
         return false
@@ -78,7 +78,7 @@ async function saveToLocalServer(data: {
 async function getServerUrl(): Promise<string> {
     return new Promise((resolve) => {
         chrome.storage.sync.get(["serverUrl"], (result) => {
-            resolve(result.serverUrl || "http://localhost:3000")
+            resolve(result.serverUrl || "https://x.saaaai.com")
         })
     })
 }
